@@ -24,7 +24,9 @@ CANDIDATES = {
     "rhythm": ("other", "guitar", "vocals", "piano"),
     "keys": ("piano", "other", "vocals", "guitar"),
 }
-VARIANT = {"guitar": "", "bass": "lowest", "rhythm": "copy", "keys": "copy"}
+VARIANT = {"guitar": "", "bass": "lowest", "rhythm": "rhythm", "keys": "keys"}
+# variante -> (fracción de notas más débiles que se omiten, compases por ventana de contorno)
+PARAMS = {"": (0.0, 2), "lowest": (0.0, 2), "rhythm": (0.12, 4), "keys": (0.08, 1), "coop": (0.05, 3)}
 MIN_RATIO = 0.7        # una parte con menos de este porcentaje de las notas de la guitarra se rehace desde ella
 
 
@@ -42,16 +44,25 @@ def plan_sources(silent: dict) -> dict:
     return plan
 
 
-def apply_variant(notes: list, variant: str, sec_to_tick) -> list:
-    """lowest: la nota más grave de cada golpe (línea de bajo). copy: las mismas notas que la guitarra."""
+def apply_variant(notes: list, variant: str, sec_to_tick=None) -> tuple:
+    """-> (notas, ventana de contorno). Las partes derivadas de otra no son copias exactas:
+    omiten sus notas más débiles y agrupan el contorno en ventanas distintas.
+    lowest: la nota más grave de cada golpe (línea de bajo)."""
+    drop, window = PARAMS.get(variant, (0.0, 2))
+    notes = list(notes)
     if variant == "lowest":
         by: dict = {}
         for n in notes:
             k = round(n.onset / 0.03)
             if k not in by or n.pitch < by[k].pitch:
                 by[k] = n
-        return sorted(by.values(), key=lambda n: n.onset)
-    return list(notes)
+        notes = sorted(by.values(), key=lambda n: n.onset)
+    if drop and notes:
+        # las más débiles; el desempate por posición es determinista y reparte las omisiones
+        weakest = sorted(range(len(notes)), key=lambda i: (notes[i].vel, (i * 2654435761) % 97))
+        gone = set(weakest[:int(len(notes) * drop)])
+        notes = [n for i, n in enumerate(notes) if i not in gone]
+    return notes, window
 
 
 class ChartError(Exception):
@@ -110,7 +121,8 @@ def build_tracks(stem_notes: dict, drum_events, grid: tempo.Grid, quiet: set, se
     t2s = grid.tick_to_sec
 
     def add(key, notes, variant, min_notes=MIN_NOTES) -> bool:
-        expert = frets.map(apply_variant(notes, variant, grid.sec_to_tick), grid.sec_to_tick, quiet)
+        vnotes, window = apply_variant(notes, variant)
+        expert = frets.map(vnotes, grid.sec_to_tick, quiet, window)
         if len(expert) < max(MIN_NOTES, min_notes):
             return False
         per = difficulty.reduce(expert, t2s)
@@ -124,12 +136,15 @@ def build_tracks(stem_notes: dict, drum_events, grid: tempo.Grid, quiet: set, se
         nps[key] = _nps(per["Expert"], secs)
         return True
 
+    rhythm_src: list = []
     order = ["guitar"] + [k for k in stem_notes if k != "guitar"]
     base = None
     for key in order:
         if key not in stem_notes:
             continue
         notes, variant = stem_notes[key]
+        if key == "rhythm":
+            rhythm_src = notes
         if key == "guitar":
             add(key, notes, variant)
             base = notes
@@ -141,10 +156,10 @@ def build_tracks(stem_notes: dict, drum_events, grid: tempo.Grid, quiet: set, se
     g = len(tracks["guitar"]["Expert"].notes) if "guitar" in tracks else 0
     for key in ("bass", "rhythm", "keys"):
         if key not in tracks and base:
-            add(key, base, VARIANT[key], int(MIN_RATIO * g) if key != "bass" else 0)
+            if add(key, base, VARIANT[key], int(MIN_RATIO * g) if key != "bass" else 0) and key == "rhythm":
+                rhythm_src = base
     if "rhythm" in tracks:
-        tracks["coop"] = tracks["rhythm"]
-        nps["coop"] = nps["rhythm"]
+        add("coop", rhythm_src, "coop", int(MIN_RATIO * g))
     if drum_events:
         dx = drums.build_expert(drum_events, grid.sec_to_tick)
         if len(dx) >= MIN_NOTES:
