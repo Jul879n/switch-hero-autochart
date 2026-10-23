@@ -144,13 +144,16 @@ def _chords(ns: list, frets: list) -> list:
 
 
 def map(notes: Iterable[Note], sec_to_tick: Callable[[float], float],
-        quiet_measures: set | None = None, window: int = 2) -> list:
+        quiet_measures: set | None = None, window: int = 2,
+        fret_map: Callable[[int], int] | None = None) -> list:
     """Notas transcritas -> pista Expert (list[ChartNote], sin sustains finales)."""
     notes = [n for n in notes if n.offset >= n.onset and 0 <= n.pitch < 128 and n.vel > 0]
     ns = main_line(notes, sec_to_tick)
     if not ns:
         return []
     frets = _rest_hand(assign_frets(ns, window), ns, quiet_measures or set())
+    if fret_map:
+        frets = [fret_map(x) for x in frets]
     track = _chords(ns, frets)
     track = P.smooth(track, P.DIFF["Expert"])
     track = unify_repeats(track, riff_groups(ns))

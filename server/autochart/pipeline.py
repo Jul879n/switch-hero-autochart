@@ -25,9 +25,16 @@ CANDIDATES = {
     "keys": ("piano", "other", "vocals", "guitar"),
 }
 VARIANT = {"guitar": "", "bass": "lowest", "rhythm": "rhythm", "keys": "keys"}
-# variante -> (fracción de notas más débiles que se omiten, compases por ventana de contorno)
-PARAMS = {"": (0.0, 2), "lowest": (0.0, 2), "rhythm": (0.12, 4), "keys": (0.08, 1), "coop": (0.05, 3)}
 MIN_RATIO = 0.7        # una parte con menos de este porcentaje de las notas de la guitarra se rehace desde ella
+# Una parte derivada toca las MISMAS notas (ritmo y duración) que la guitarra, pero en otros trastes:
+# movimiento paralelo o en espejo del contorno, para sonar a la vez sin ser lo mismo.
+def _shift(k: int):
+    return lambda f: f + k if f + k <= 4 else 8 - (f + k)
+
+
+FRET_MAPS = {"shift1": _shift(1), "shift2": _shift(2), "mirror": lambda f: 4 - f}
+# variante -> (compases por ventana de contorno, transformación de trastes)
+PARAMS = {"": (2, None), "lowest": (2, None), "rhythm": (2, "shift1"), "keys": (2, "mirror"), "coop": (2, "shift2")}
 
 
 def plan_sources(silent: dict) -> dict:
@@ -44,11 +51,10 @@ def plan_sources(silent: dict) -> dict:
     return plan
 
 
-def apply_variant(notes: list, variant: str, sec_to_tick=None) -> tuple:
-    """-> (notas, ventana de contorno). Las partes derivadas de otra no son copias exactas:
-    omiten sus notas más débiles y agrupan el contorno en ventanas distintas.
-    lowest: la nota más grave de cada golpe (línea de bajo)."""
-    drop, window = PARAMS.get(variant, (0.0, 2))
+def apply_variant(notes: list, variant: str) -> tuple:
+    """-> (notas, ventana de contorno, transformación de trastes).
+    lowest: la nota más grave de cada golpe (línea de bajo). Las demás variantes no omiten notas."""
+    window, fmap = PARAMS.get(variant, (2, None))
     notes = list(notes)
     if variant == "lowest":
         by: dict = {}
@@ -57,12 +63,7 @@ def apply_variant(notes: list, variant: str, sec_to_tick=None) -> tuple:
             if k not in by or n.pitch < by[k].pitch:
                 by[k] = n
         notes = sorted(by.values(), key=lambda n: n.onset)
-    if drop and notes:
-        # las más débiles; el desempate por posición es determinista y reparte las omisiones
-        weakest = sorted(range(len(notes)), key=lambda i: (notes[i].vel, (i * 2654435761) % 97))
-        gone = set(weakest[:int(len(notes) * drop)])
-        notes = [n for i, n in enumerate(notes) if i not in gone]
-    return notes, window
+    return notes, window, FRET_MAPS.get(fmap) if fmap else None
 
 
 class ChartError(Exception):
@@ -121,8 +122,8 @@ def build_tracks(stem_notes: dict, drum_events, grid: tempo.Grid, quiet: set, se
     t2s = grid.tick_to_sec
 
     def add(key, notes, variant, min_notes=MIN_NOTES) -> bool:
-        vnotes, window = apply_variant(notes, variant)
-        expert = frets.map(vnotes, grid.sec_to_tick, quiet, window)
+        vnotes, window, fmap = apply_variant(notes, variant)
+        expert = frets.map(vnotes, grid.sec_to_tick, quiet, window, fmap)
         if len(expert) < max(MIN_NOTES, min_notes):
             return False
         per = difficulty.reduce(expert, t2s)

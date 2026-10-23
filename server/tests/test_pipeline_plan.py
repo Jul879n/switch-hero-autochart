@@ -22,8 +22,10 @@ def test_variants():
     notes = [Note(0.0, 0.2, 60, .8), Note(0.0, 0.2, 40, .8), Note(0.26, 0.4, 62, .8)]
     assert [n.pitch for n in PL.apply_variant(notes, "lowest")[0]] == [40, 62]
     many = [Note(0.1 * i, 0.1 * i + .05, 60 + i % 5, 0.2 + i / 100) for i in range(50)]
-    kept, window = PL.apply_variant(many, "rhythm")
-    assert 40 <= len(kept) < 50 and window == 4          # omite las más débiles
+    kept, window, fmap = PL.apply_variant(many, "rhythm")
+    assert len(kept) == 50 and fmap is not None          # no omite notas
+    assert [fmap(f) for f in range(5)] == [1, 2, 3, 4, 3]
+    assert [PL.FRET_MAPS["mirror"](f) for f in range(5)] == [4, 3, 2, 1, 0]
 
 
 def test_sparse_parts_are_rebuilt_from_guitar():
@@ -36,5 +38,14 @@ def test_sparse_parts_are_rebuilt_from_guitar():
     n = lambda k: len(tracks[k]["Expert"].notes)
     assert {"guitar", "rhythm", "keys", "bass", "coop"} <= set(tracks)
     assert n("rhythm") >= 0.7 * n("guitar") and n("keys") >= 0.7 * n("guitar")
-    sig = lambda k: [(x.tick, x.frets) for x in tracks[k]["Expert"].notes]
-    assert len({str(sig(k)) for k in ("guitar", "rhythm", "keys", "coop")}) == 4    # ninguna es copia exacta
+    pos = lambda k: {x.tick: x.frets for x in tracks[k]["Expert"].notes}
+    g = pos("guitar")
+    for k in ("rhythm", "keys", "coop"):
+        p = pos(k)
+        assert len(set(p) & set(g)) >= 0.9 * len(g)                      # mismas posiciones (ritmo)
+        assert sum(p[t] == g[t] for t in set(p) & set(g)) < 0.5 * len(g)  # pero otros trastes
+    assert len({str(sorted(pos(k).items())) for k in ("guitar", "rhythm", "keys", "coop")}) == 4
+
+
+def test_public_names_exist():
+    assert issubclass(PL.ChartError, Exception) and PL.ChartResult and callable(PL.run)
