@@ -10,9 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
     && /root/.cargo/bin/rustup self uninstall -y \
     && apt-get purge -y build-essential cmake pkg-config curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 RUN python -c "from demucs.pretrained import get_model; get_model('htdemucs_6s')"
-ENV TORCH_HOME=/opt/torch DATA_DIR=/data
-RUN mv /root/.cache/torch /opt/torch 2>/dev/null || true \
-    && useradd -r -u 10001 -m app && mkdir -p /data && chown -R app:app /data /opt/torch
+ENV HF_HOME=/opt/hf TORCH_HOME=/opt/torch DATA_DIR=/data
+RUN mkdir -p /opt/hf /data /opt/torch && cp -r /root/.cache/huggingface/. /opt/hf/ \
+    && useradd -r -u 10001 -m app && chown -R app:app /data /opt/hf /opt/torch
 WORKDIR /srv/server
 COPY server/ /srv/server/
 USER app
