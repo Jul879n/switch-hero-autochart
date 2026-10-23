@@ -7,71 +7,107 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<main>
+<a class="skip" href="#main">Saltar al contenido</a>
+<header class="top">
   <h1>Switch Hero Autochart</h1>
-  <p class="lead">Suba una canción o pegue una URL y se generará la carta para Switch Hero en las 4 dificultades.</p>
+  <div id="bar" class="bar" hidden>
+    <span id="who"></span>
+    <button type="button" id="logout" class="btn ghost">Cerrar sesión</button>
+  </div>
+</header>
 
-  <section id="auth" hidden>
-    <form id="login-form" class="card">
+<main id="main">
+  <section id="auth" class="narrow" hidden>
+    <form id="login-form" class="card" novalidate>
       <h2>Iniciar sesión</h2>
       <label for="login-email">Correo</label>
       <input id="login-email" type="email" autocomplete="username" required>
       <label for="login-pass">Contraseña</label>
-      <input id="login-pass" type="password" autocomplete="current-password" required>
-      <button type="submit">Entrar</button>
+      <div class="pass">
+        <input id="login-pass" type="password" autocomplete="current-password" required>
+        <button type="button" class="btn ghost toggle" data-target="login-pass" aria-pressed="false">Mostrar</button>
+      </div>
+      <button type="submit" class="btn">Entrar</button>
+      <button type="button" id="to-recover" class="link">¿Olvidó su contraseña?</button>
       <p id="login-msg" class="msg" role="alert"></p>
       <p class="hint">¿Sin cuenta? Solo el administrador puede invitarle.</p>
     </form>
-    <form id="invite-form" class="card" hidden>
+
+    <form id="recover-form" class="card" hidden novalidate>
+      <h2>Recuperar contraseña</h2>
+      <p class="hint">Le enviaremos una contraseña temporal al correo de su cuenta.</p>
+      <label for="rec-email">Correo</label>
+      <input id="rec-email" type="email" autocomplete="username" required>
+      <button type="submit" class="btn">Enviar contraseña temporal</button>
+      <button type="button" id="to-login" class="link">Volver a iniciar sesión</button>
+      <p id="rec-msg" class="msg" role="status" aria-live="polite"></p>
+    </form>
+
+    <form id="invite-form" class="card" hidden novalidate>
       <h2>Crear su cuenta</h2>
       <p id="invite-email"></p>
       <label for="invite-name">Nombre</label>
       <input id="invite-name" type="text" autocomplete="name" maxlength="100">
       <label for="invite-pass">Contraseña (mínimo 10 caracteres)</label>
       <input id="invite-pass" type="password" autocomplete="new-password" minlength="10" required>
-      <button type="submit">Crear cuenta</button>
+      <button type="submit" class="btn">Crear cuenta</button>
       <p id="invite-msg" class="msg" role="alert"></p>
     </form>
   </section>
 
-  <div id="bar" class="bar" hidden>
-    <span id="who"></span>
-    <button type="button" id="logout" class="secondary">Cerrar sesión</button>
-  </div>
-
-  <section id="admin" class="card" hidden>
-    <h2>Administración de usuarios</h2>
-    <form id="admin-invite" class="row">
-      <div><label for="adm-email">Invitar por correo</label><input id="adm-email" type="email" required></div>
-      <div class="end"><button type="submit">Enviar invitación</button></div>
+  <section id="change" class="narrow" hidden>
+    <form id="change-form" class="card" novalidate>
+      <h2>Elija una contraseña nueva</h2>
+      <p class="hint" id="change-hint">Está usando una contraseña temporal; debe cambiarla para continuar.</p>
+      <label for="chg-cur">Contraseña actual</label>
+      <input id="chg-cur" type="password" autocomplete="current-password" required>
+      <label for="chg-new">Contraseña nueva (mínimo 10 caracteres)</label>
+      <input id="chg-new" type="password" autocomplete="new-password" minlength="10" required>
+      <button type="submit" class="btn">Cambiar contraseña</button>
+      <p id="chg-msg" class="msg" role="alert"></p>
     </form>
-    <form id="admin-create" class="row">
-      <div><label for="adm-cemail">Crear usuario: correo</label><input id="adm-cemail" type="email" required></div>
-      <div><label for="adm-cpass">Contraseña inicial (10+)</label><input id="adm-cpass" type="password" minlength="10" autocomplete="new-password" required></div>
-      <div class="end"><button type="submit">Crear usuario</button></div>
-    </form>
-    <p id="adm-msg" class="msg" role="status" aria-live="polite"></p>
-    <ul id="users" class="jobs"></ul>
   </section>
 
-  <form id="form" class="card" hidden>
-    <div id="drop" class="drop" tabindex="0" role="button" aria-describedby="drop-hint">
-      <span id="drop-label">Arrastre un archivo de audio o pulse para elegirlo</span>
-      <span id="drop-hint" class="hint">MP3, OGG, WAV, FLAC, M4A… hasta 100 MB</span>
-      <input id="file" name="file" type="file" accept="audio/*,video/*" hidden>
-    </div>
-    <label for="url">o pegue una URL</label>
-    <input id="url" name="url" type="url" placeholder="https://…" autocomplete="off">
-    <div class="row">
-      <div><label for="title">Título (opcional)</label><input id="title" name="title" type="text" maxlength="200"></div>
-      <div><label for="artist">Artista (opcional)</label><input id="artist" name="artist" type="text" maxlength="200"></div>
-    </div>
-    <button type="submit" id="submit">Generar carta</button>
-    <p id="msg" role="status" aria-live="polite"></p>
-  </form>
+  <div id="app" hidden>
+    <section class="card" aria-labelledby="new-h">
+      <h2 id="new-h">Nueva canción</h2>
+      <form id="form" novalidate>
+        <div id="drop" class="drop" tabindex="0" role="button" aria-describedby="drop-hint">
+          <span id="drop-label">Arrastre un archivo de audio o pulse para elegirlo</span>
+          <span id="drop-hint" class="hint">MP3, OGG, WAV, FLAC, M4A… hasta 100 MB</span>
+          <input id="file" type="file" accept="audio/*,video/*" hidden>
+        </div>
+        <label for="url">o pegue una URL</label>
+        <input id="url" type="url" placeholder="https://…" autocomplete="off">
+        <div class="row">
+          <div><label for="title">Título (opcional)</label><input id="title" type="text" maxlength="200"></div>
+          <div><label for="artist">Artista (opcional)</label><input id="artist" type="text" maxlength="200"></div>
+        </div>
+        <button type="submit" id="submit" class="btn">Generar carta</button>
+        <p id="msg" class="msg" role="status" aria-live="polite"></p>
+      </form>
+    </section>
 
-  <h2 id="songs-h" hidden>Canciones</h2>
-  <ul id="jobs" class="jobs" aria-live="polite"></ul>
+    <section aria-labelledby="songs-h">
+      <h2 id="songs-h">Canciones</h2>
+      <ul id="jobs" class="list"></ul>
+    </section>
+
+    <section id="admin" class="card" aria-labelledby="adm-h" hidden>
+      <h2 id="adm-h">Administración de usuarios</h2>
+      <form id="admin-invite" class="row" novalidate>
+        <div><label for="adm-email">Invitar por correo</label><input id="adm-email" type="email" required></div>
+        <div class="end"><button type="submit" class="btn">Enviar invitación</button></div>
+      </form>
+      <form id="admin-create" class="row3" novalidate>
+        <div><label for="adm-cemail">Crear usuario: correo</label><input id="adm-cemail" type="email" required></div>
+        <div><label for="adm-cpass">Contraseña inicial (10+)</label><input id="adm-cpass" type="password" minlength="10" autocomplete="new-password" required></div>
+        <div class="end"><button type="submit" class="btn">Crear usuario</button></div>
+      </form>
+      <p id="adm-msg" class="msg" role="status" aria-live="polite"></p>
+      <ul id="users" class="list"></ul>
+    </section>
+  </div>
 </main>
 <script src="app.js"></script>
 </body>

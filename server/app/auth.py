@@ -87,6 +87,31 @@ def bootstrap_admin() -> None:
         storage._q("UPDATE users SET role='admin', active=1 WHERE id=?", (u["id"],))
 
 
+def set_password(uid: int, pw: str, must_change: bool = False) -> None:
+    storage._q("UPDATE users SET pw_hash=?, must_change=? WHERE id=?",
+               (hash_password(pw), 1 if must_change else 0, uid))
+    revoke_user_sessions(uid)
+
+
+_recover: dict = defaultdict(list)
+
+
+def recover_password(email: str, ip: str, send) -> None:
+    """Envía una contraseña temporal. No revela si el correo existe y no cambia nada si el envío falla."""
+    now = time.time()
+    for key in (("e", email), ("i", ip)):
+        _recover[key] = [t for t in _recover[key] if now - t < 3600]
+        if len(_recover[key]) >= 5:
+            raise HTTPException(429, "Demasiadas solicitudes; intente más tarde")
+        _recover[key].append(now)
+    u = user_by_email(email)
+    if not u or not u["active"]:
+        return
+    temp = secrets.token_urlsafe(9)
+    if send(u["email"], temp):
+        set_password(u["id"], temp, must_change=True)
+
+
 # --- invitaciones ---
 def create_invite(email: str) -> str:
     token = secrets.token_urlsafe(32)
@@ -160,6 +185,8 @@ def current_user(request: Request) -> dict:
     u = user_from_token(request.cookies.get(COOKIE))
     if not u:
         raise HTTPException(401, "Inicie sesión")
+    if u.get("must_change") and request.url.path not in ("/api/auth/password", "/api/auth/me", "/api/auth/logout"):
+        raise HTTPException(403, "Debe cambiar su contraseña antes de continuar")
     return u
 
 

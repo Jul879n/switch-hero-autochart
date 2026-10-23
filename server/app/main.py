@@ -6,10 +6,13 @@ import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import ipaddress
 import os
+import socket
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import auth, jobs, mail, storage
@@ -26,7 +29,42 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="Switch Hero Autochart", lifespan=lifespan)
+app = FastAPI(title="Switch Hero Autochart", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+       "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+
+
+@app.middleware("http")
+async def security(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):       # CSRF: el Origin debe ser el propio host
+        origin = request.headers.get("origin")
+        if origin and urlparse(origin).netloc != request.headers.get("host", ""):
+            return JSONResponse({"detail": "Origen no permitido"}, status_code=403)
+    resp = await call_next(request)
+    resp.headers.update({
+        "Content-Security-Policy": CSP, "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer", "Permissions-Policy": "geolocation=(), camera=(), microphone=()",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    })
+    if request.url.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+MAX_ACTIVE_PER_USER = 5
+
+
+def _public_url_ok(url: str) -> bool:
+    """Rechaza URLs hacia redes internas (SSRF): solo hosts que resuelvan a IPs públicas."""
+    p = urlparse(url)
+    if p.scheme not in ("http", "https") or not p.hostname or p.username or p.password:
+        return False
+    try:
+        infos = socket.getaddrinfo(p.hostname, p.port or (443 if p.scheme == "https" else 80))
+    except OSError:
+        return False
+    return bool(infos) and all(ipaddress.ip_address(i[4][0]).is_global for i in infos)
 
 
 def _public(j: dict) -> dict:
@@ -67,8 +105,14 @@ def _base_url(request: Request) -> str:
     return os.environ.get("PUBLIC_URL", "").rstrip("/") or str(request.base_url).rstrip("/")
 
 
+def _secure(request: Request) -> bool:
+    return (os.environ.get("PUBLIC_URL", "").startswith("https://") or request.url.scheme == "https"
+            or request.headers.get("x-forwarded-proto") == "https")
+
+
 def _me(u: dict) -> dict:
-    return {"id": u["id"], "email": u["email"], "name": u["name"], "role": u["role"]}
+    return {"id": u["id"], "email": u["email"], "name": u["name"], "role": u["role"],
+            "must_change": bool(u.get("must_change"))}
 
 
 # ---------- sesión ----------
@@ -78,8 +122,41 @@ async def login(request: Request, response: Response):
     ip = request.client.host if request.client else "?"
     token = auth.login(auth.norm_email(str(body.get("email", ""))), str(body.get("password", "")), ip)
     response.set_cookie(auth.COOKIE, token, max_age=auth.SESSION_TTL, httponly=True, samesite="lax",
-                        secure=request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https")
+                        secure=_secure(request))
     return _me(auth.user_from_token(token))
+
+
+@app.post("/api/auth/recover")
+async def recover(request: Request):
+    body = await request.json()
+    email = auth.norm_email(str(body.get("email", "")))
+    ip = request.client.host if request.client else "?"
+    if not mail.configured():
+        raise HTTPException(503, "El envío de correo no está configurado; pida al administrador una nueva contraseña")
+
+    def send(to: str, temp: str) -> bool:
+        return mail.send(to, "Contraseña temporal de Switch Hero Autochart",
+                         f"Su contraseña temporal es:\n\n{temp}\n\nInicie sesión y el sistema le pedirá elegir una nueva.\n"
+                         "Si no lo solicitó, ignore este mensaje.\n")
+    auth.recover_password(email, ip, send)
+    return {"ok": True}
+
+
+@app.post("/api/auth/password")
+async def change_password(request: Request, response: Response, u: dict = Depends(auth.current_user)):
+    body = await request.json()
+    cur, new = str(body.get("current", "")), str(body.get("new", ""))
+    if not auth.verify_password(cur, u["pw_hash"]):
+        raise HTTPException(400, "La contraseña actual no coincide")
+    auth.check_password(new)
+    if new == cur:
+        raise HTTPException(400, "La nueva contraseña debe ser distinta")
+    auth.set_password(u["id"], new)
+    ip = request.client.host if request.client else "?"
+    token = auth.login(u["email"], new, ip)
+    response.set_cookie(auth.COOKIE, token, max_age=auth.SESSION_TTL, httponly=True, samesite="lax",
+                        secure=_secure(request))
+    return _me(auth.user_by_id(u["id"]))
 
 
 @app.post("/api/auth/logout")
@@ -177,9 +254,12 @@ async def create_job(file: UploadFile | None = File(None), url: str = Form(""),
     if has_file == bool(url):
         raise HTTPException(400, "Envíe un archivo o una URL (solo uno)")
     title, artist = title.strip()[:200], artist.strip()[:200]
+    active = [j for j in storage.list_jobs(user_id=user["id"]) if j["status"] in ("queued", "running")]
+    if len(active) >= MAX_ACTIVE_PER_USER:
+        raise HTTPException(429, f"Ya tiene {MAX_ACTIVE_PER_USER} canciones en proceso; espere a que terminen")
     if url:
-        if not re.match(r"^https?://", url, re.I):
-            raise HTTPException(400, "La URL debe comenzar con http:// o https://")
+        if len(url) > 2000 or not _public_url_ok(url):
+            raise HTTPException(400, "URL inválida o no permitida")
         jid = storage.create("url", url, title, artist, user["id"])
     else:
         jid = storage.create("file", "", title, artist, user["id"])

@@ -124,7 +124,7 @@ def run(job_dir, meta: dict, progress: Callable[[str, int], None] = lambda s, p:
     secs = audio.duration(wav)
 
     progress("separacion", 10)
-    stems = separate.run(wav, work / "stems")
+    stems = separate.run(wav, work / "stems", lambda p: progress("separacion", 10 + int(p * 0.30)))
     silent = {k: audio.is_silent(p) for k, p in stems.items()}
 
     progress("tempo", 40)

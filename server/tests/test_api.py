@@ -39,6 +39,8 @@ def test_validation(client):
     r = client.post("/api/jobs", data={"url": "https://x.y"}, files={"file": ("a.mp3", b"abc")})
     assert r.status_code == 400
     assert client.post("/api/jobs", data={"url": "ftp://x"}).status_code == 400
+    assert client.post("/api/jobs", data={"url": "http://127.0.0.1:8000/x"}).status_code == 400   # SSRF
+    assert client.post("/api/jobs", data={"url": "http://169.254.169.254/latest"}).status_code == 400
     assert client.get("/api/jobs/zzzz").status_code == 404
 
 
@@ -78,3 +80,57 @@ def test_installer_token(client):
     assert client.get("/api/switch/songs").status_code == 401
     assert client.get("/api/switch/songs", headers={"Authorization": "Bearer tok"}).status_code == 200
     assert client.get("/api/switch/songs", headers={"Authorization": "Bearer mal"}).status_code == 401
+
+
+def test_recover_and_change_password(client, monkeypatch):
+    from app import auth, mail
+    sent = {}
+    monkeypatch.setattr(mail, "configured", lambda: True)
+    monkeypatch.setattr(mail, "send", lambda to, subj, body: sent.update(to=to, body=body) or True)
+    login(client)
+    client.post("/api/admin/users", json={"email": "r@x.cl", "password": "clave-original-1"})
+    client.post("/api/auth/logout")
+    assert client.post("/api/auth/recover", json={"email": "nadie@x.cl"}).status_code == 200
+    assert not sent                                          # no revela ni envía a desconocidos
+    assert client.post("/api/auth/recover", json={"email": "r@x.cl"}).status_code == 200
+    temp = sent["body"].split("\n\n")[1]
+    assert login(client, "r@x.cl", "clave-original-1").status_code == 401
+    r = login(client, "r@x.cl", temp)
+    assert r.status_code == 200 and r.json()["must_change"] is True
+    assert client.post("/api/auth/password", json={"current": "mala", "new": "nueva-clave-123"}).status_code == 400
+    r = client.post("/api/auth/password", json={"current": temp, "new": "nueva-clave-123"})
+    assert r.status_code == 200 and r.json()["must_change"] is False
+    assert login(client, "r@x.cl", "nueva-clave-123").status_code == 200
+
+
+def test_recover_fails_safe_when_send_fails(client, monkeypatch):
+    from app import mail
+    monkeypatch.setattr(mail, "configured", lambda: True)
+    monkeypatch.setattr(mail, "send", lambda *a: False)
+    login(client)
+    client.post("/api/admin/users", json={"email": "s@x.cl", "password": "clave-original-1"})
+    client.post("/api/auth/logout")
+    client.post("/api/auth/recover", json={"email": "s@x.cl"})
+    assert login(client, "s@x.cl", "clave-original-1").status_code == 200   # no quedó bloqueado
+
+
+def test_security_headers_and_csrf(client):
+    r = client.get("/")
+    assert r.headers["x-frame-options"] == "DENY" and "default-src 'self'" in r.headers["content-security-policy"]
+    assert client.get("/docs").status_code in (404, 405)
+    r = client.post("/api/auth/login", json={"email": "a", "password": "b"}, headers={"Origin": "https://evil.example"})
+    assert r.status_code == 403
+
+
+def test_must_change_blocks_api(client, monkeypatch):
+    from app import mail
+    monkeypatch.setattr(mail, "configured", lambda: True)
+    sent = {}
+    monkeypatch.setattr(mail, "send", lambda to, s, b: sent.update(b=b) or True)
+    login(client)
+    client.post("/api/admin/users", json={"email": "m@x.cl", "password": "clave-original-1"})
+    client.post("/api/auth/logout")
+    client.post("/api/auth/recover", json={"email": "m@x.cl"})
+    login(client, "m@x.cl", sent["b"].split("\n\n")[1])
+    assert client.get("/api/jobs").status_code == 403
+    assert client.get("/api/auth/me").status_code == 200
