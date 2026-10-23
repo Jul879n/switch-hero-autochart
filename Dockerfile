@@ -3,7 +3,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libsndfi
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir torch==2.2.2 torchaudio==2.2.2 --extra-index-url https://download.pytorch.org/whl/cpu
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# En arm64 `sphn` (dependencia de demucs) no trae wheel: se compila con Rust y se limpia en la misma capa.
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ca-certificates \
+    && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+    && PATH="/root/.cargo/bin:$PATH" pip install --no-cache-dir -r /tmp/requirements.txt \
+    && /root/.cargo/bin/rustup self uninstall -y \
+    && apt-get purge -y build-essential curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 RUN python -c "from demucs.pretrained import get_model; get_model('htdemucs_6s')"
 WORKDIR /srv/server
 COPY server/ /srv/server/
