@@ -24,7 +24,8 @@ CANDIDATES = {
     "rhythm": ("other", "guitar", "vocals", "piano"),
     "keys": ("piano", "other", "vocals", "guitar"),
 }
-VARIANT = {"guitar": "", "bass": "lowest", "rhythm": "sparse", "keys": "sparse"}
+VARIANT = {"guitar": "", "bass": "lowest", "rhythm": "copy", "keys": "copy"}
+MIN_RATIO = 0.7        # una parte con menos de este porcentaje de las notas de la guitarra se rehace desde ella
 
 
 def plan_sources(silent: dict) -> dict:
@@ -42,7 +43,7 @@ def plan_sources(silent: dict) -> dict:
 
 
 def apply_variant(notes: list, variant: str, sec_to_tick) -> list:
-    """lowest: la nota más grave de cada golpe (línea de bajo). sparse: solo notas sobre el pulso de corcheas."""
+    """lowest: la nota más grave de cada golpe (línea de bajo). copy: las mismas notas que la guitarra."""
     if variant == "lowest":
         by: dict = {}
         for n in notes:
@@ -50,8 +51,6 @@ def apply_variant(notes: list, variant: str, sec_to_tick) -> list:
             if k not in by or n.pitch < by[k].pitch:
                 by[k] = n
         return sorted(by.values(), key=lambda n: n.onset)
-    if variant == "sparse":
-        return [n for n in notes if (sec_to_tick(n.onset) + 12) % P.EIGHTH < 24]
     return list(notes)
 
 
@@ -110,10 +109,10 @@ def build_tracks(stem_notes: dict, drum_events, grid: tempo.Grid, quiet: set, se
     nps: dict = {}
     t2s = grid.tick_to_sec
 
-    def add(key, notes, variant):
+    def add(key, notes, variant, min_notes=MIN_NOTES) -> bool:
         expert = frets.map(apply_variant(notes, variant, grid.sec_to_tick), grid.sec_to_tick, quiet)
-        if len(expert) < MIN_NOTES:
-            return
+        if len(expert) < max(MIN_NOTES, min_notes):
+            return False
         per = difficulty.reduce(expert, t2s)
         stars = stars_for(per["Expert"])
         tracks[key] = {d: Track(per[d], stars if per[d] else []) for d in P.DIFFICULTIES}
@@ -123,15 +122,26 @@ def build_tracks(stem_notes: dict, drum_events, grid: tempo.Grid, quiet: set, se
                 raise ChartError(f"Error del generador ({key}/{d}): " +
                                  "; ".join(f"{v.rule}@{v.tick} {v.msg}" for v in bad[:5]))
         nps[key] = _nps(per["Expert"], secs)
+        return True
 
-    for key, (notes, variant) in stem_notes.items():
-        add(key, notes, variant)
-    # respaldo final: toda parte que falte se deriva de la guitarra (variante distinta)
-    if "guitar" in stem_notes or tracks:
-        base = stem_notes.get("guitar", (None, ""))[0] or next(iter(stem_notes.values()))[0]
-        for key in ("bass", "rhythm", "keys"):
-            if key not in tracks:
-                add(key, base, VARIANT[key])
+    order = ["guitar"] + [k for k in stem_notes if k != "guitar"]
+    base = None
+    for key in order:
+        if key not in stem_notes:
+            continue
+        notes, variant = stem_notes[key]
+        if key == "guitar":
+            add(key, notes, variant)
+            base = notes
+            continue
+        g = len(tracks["guitar"]["Expert"].notes) if "guitar" in tracks else 0
+        add(key, notes, variant, int(MIN_RATIO * g))
+    # toda parte ausente o escasa se deriva de la guitarra: mismas notas (bajo: la línea más grave)
+    base = base or (stem_notes[order[0]][0] if order and order[0] in stem_notes else [])
+    g = len(tracks["guitar"]["Expert"].notes) if "guitar" in tracks else 0
+    for key in ("bass", "rhythm", "keys"):
+        if key not in tracks and base:
+            add(key, base, VARIANT[key], int(MIN_RATIO * g) if key != "bass" else 0)
     if "rhythm" in tracks:
         tracks["coop"] = tracks["rhythm"]
         nps["coop"] = nps["rhythm"]
