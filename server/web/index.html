@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Switch Hero Autochart</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <h1>Switch Hero Autochart</h1>
+  <p class="lead">Suba una canción o pegue una URL y se generará la carta para Switch Hero en las 4 dificultades.</p>
+
+  <section id="auth" hidden>
+    <form id="login-form" class="card">
+      <h2>Iniciar sesión</h2>
+      <label for="login-email">Correo</label>
+      <input id="login-email" type="email" autocomplete="username" required>
+      <label for="login-pass">Contraseña</label>
+      <input id="login-pass" type="password" autocomplete="current-password" required>
+      <button type="submit">Entrar</button>
+      <p id="login-msg" class="msg" role="alert"></p>
+      <p class="hint">¿Sin cuenta? Solo el administrador puede invitarle.</p>
+    </form>
+    <form id="invite-form" class="card" hidden>
+      <h2>Crear su cuenta</h2>
+      <p id="invite-email"></p>
+      <label for="invite-name">Nombre</label>
+      <input id="invite-name" type="text" autocomplete="name" maxlength="100">
+      <label for="invite-pass">Contraseña (mínimo 10 caracteres)</label>
+      <input id="invite-pass" type="password" autocomplete="new-password" minlength="10" required>
+      <button type="submit">Crear cuenta</button>
+      <p id="invite-msg" class="msg" role="alert"></p>
+    </form>
+  </section>
+
+  <div id="bar" class="bar" hidden>
+    <span id="who"></span>
+    <button type="button" id="logout" class="secondary">Cerrar sesión</button>
+  </div>
+
+  <section id="admin" class="card" hidden>
+    <h2>Administración de usuarios</h2>
+    <form id="admin-invite" class="row">
+      <div><label for="adm-email">Invitar por correo</label><input id="adm-email" type="email" required></div>
+      <div class="end"><button type="submit">Enviar invitación</button></div>
+    </form>
+    <form id="admin-create" class="row">
+      <div><label for="adm-cemail">Crear usuario: correo</label><input id="adm-cemail" type="email" required></div>
+      <div><label for="adm-cpass">Contraseña inicial (10+)</label><input id="adm-cpass" type="password" minlength="10" autocomplete="new-password" required></div>
+      <div class="end"><button type="submit">Crear usuario</button></div>
+    </form>
+    <p id="adm-msg" class="msg" role="status" aria-live="polite"></p>
+    <ul id="users" class="jobs"></ul>
+  </section>
+
+  <form id="form" class="card" hidden>
+    <div id="drop" class="drop" tabindex="0" role="button" aria-describedby="drop-hint">
+      <span id="drop-label">Arrastre un archivo de audio o pulse para elegirlo</span>
+      <span id="drop-hint" class="hint">MP3, OGG, WAV, FLAC, M4A… hasta 100 MB</span>
+      <input id="file" name="file" type="file" accept="audio/*,video/*" hidden>
+    </div>
+    <label for="url">o pegue una URL</label>
+    <input id="url" name="url" type="url" placeholder="https://…" autocomplete="off">
+    <div class="row">
+      <div><label for="title">Título (opcional)</label><input id="title" name="title" type="text" maxlength="200"></div>
+      <div><label for="artist">Artista (opcional)</label><input id="artist" name="artist" type="text" maxlength="200"></div>
+    </div>
+    <button type="submit" id="submit">Generar carta</button>
+    <p id="msg" role="status" aria-live="polite"></p>
+  </form>
+
+  <h2 id="songs-h" hidden>Canciones</h2>
+  <ul id="jobs" class="jobs" aria-live="polite"></ul>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
