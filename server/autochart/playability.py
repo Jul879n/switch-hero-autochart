@@ -25,6 +25,9 @@ QUIET_NOTES_PER_MEASURE = 4
 FIRST_NOTE_MIN_SEC = 3.0      # R6
 SYNC_RANGE_SEC = 0.060        # R7
 SYNC_STEP_SEC = 0.002
+SPAN_MAX = 3                  # SPAN: trastes de diferencia máxima dentro de un pulso
+ONSET_TOL_SEC = 0.05          # tolerancia para pegar una nota a un golpe real del audio
+GHOST_KEEP_VEL = 0.6          # nota sin golpe cercano: se conserva solo si es así de fuerte
 SILENT_DBFS = -40.0
 SILENT_FRACTION = 0.85
 
@@ -138,6 +141,30 @@ def smooth(notes: Sequence[ChartNote], diff: Diff) -> list[ChartNote]:
             nf = fp + diff.max_jump * (1 if fn > fp else -1)
             nf = max(0, min(diff.max_fret, nf))
             out[i] = replace(n, frets=(nf,), main=nf)
+    # SPAN: la mano no estira más de SPAN_MAX trastes dentro de un pulso
+    for _ in range(5):
+        bad = _span_windows(out)
+        if not bad:
+            break
+        for idxs in bad:
+            fs = sorted(_single(out[i]) for i in idxs)
+            c = int(round(fs[len(fs) // 2] if len(fs) % 2 else (fs[len(fs) // 2 - 1] + fs[len(fs) // 2]) / 2))
+            lo = 0 if c <= 1 else 1
+            for i in idxs:
+                f = max(lo, min(lo + SPAN_MAX, _single(out[i])))
+                out[i] = replace(out[i], frets=(f,), main=f)
+    return out
+
+
+def _span_windows(notes: Sequence[ChartNote]) -> list:
+    """Índices de notas de un solo traste, por ventana [t, t+TICKS), cuyo rango supera SPAN_MAX."""
+    singles = [i for i, n in enumerate(notes) if _single(n) is not None]
+    out = []
+    for a in singles:
+        idxs = [i for i in singles if 0 <= notes[i].tick - notes[a].tick < TICKS]
+        fs = [_single(notes[i]) for i in idxs]
+        if max(fs) - min(fs) > SPAN_MAX:
+            out.append(idxs)
     return out
 
 
@@ -181,6 +208,8 @@ def lint(track: Sequence[ChartNote], difficulty: str,
                 if (fc == fa and abs(fa - fb) >= 3 and gap < BURST_GAP
                         and nn.tick - nx.tick < BURST_GAP):
                     v.append(Violation("R2", n.tick, f"zig-zag {fa}<->{fb}"))
+    for idxs in _span_windows(notes):
+        v.append(Violation("SPAN", notes[idxs[0]].tick, f"estiramiento > {SPAN_MAX} trastes en un pulso"))
     times = [t2s(n.tick) for n in notes]
     j = 0
     for i, t in enumerate(times):

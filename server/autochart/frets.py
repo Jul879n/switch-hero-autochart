@@ -88,16 +88,21 @@ def _contour_table(pitches: list) -> dict:
     return {p: int(round(x)) for p, x in zip(ps, pos)}
 
 
-def assign_frets(ns: list, window: int = 2) -> list:
-    """Ventana de `window` compases; misma altura = mismo traste dentro de la ventana."""
+def assign_frets(ns: list, window: int = 2, shift: int = 0) -> list:
+    """Ventana de `window` compases; misma altura = mismo traste dentro de la ventana.
+
+    `shift` (semitonos) lee la tabla de la ventana en otra altura (armonía paralela): interpola
+    entre sus tonos y satura en los extremos, sin reflejos."""
     win = defaultdict(list)
     for n in ns:
         win[n.tick // (window * P.MEASURE)].append(n)
     frets = {}
     for items in win.values():
         table = _contour_table([n.pitch for n in items])
+        ps = sorted(table)
+        fs = [table[p] for p in ps]
         for n in items:
-            frets[id(n)] = table[n.pitch]
+            frets[id(n)] = max(0, min(4, int(round(float(np.interp(n.pitch + shift, ps, fs))))))
     return [frets[id(n)] for n in ns]
 
 
@@ -144,16 +149,13 @@ def _chords(ns: list, frets: list) -> list:
 
 
 def map(notes: Iterable[Note], sec_to_tick: Callable[[float], float],
-        quiet_measures: set | None = None, window: int = 2,
-        fret_map: Callable[[int], int] | None = None) -> list:
+        quiet_measures: set | None = None, window: int = 2, shift: int = 0) -> list:
     """Notas transcritas -> pista Expert (list[ChartNote], sin sustains finales)."""
     notes = [n for n in notes if n.offset >= n.onset and 0 <= n.pitch < 128 and n.vel > 0]
     ns = main_line(notes, sec_to_tick)
     if not ns:
         return []
-    frets = _rest_hand(assign_frets(ns, window), ns, quiet_measures or set())
-    if fret_map:
-        frets = [fret_map(x) for x in frets]
+    frets = _rest_hand(assign_frets(ns, window, shift), ns, quiet_measures or set())
     track = _chords(ns, frets)
     track = P.smooth(track, P.DIFF["Expert"])
     track = unify_repeats(track, riff_groups(ns))

@@ -134,3 +134,20 @@ def test_must_change_blocks_api(client, monkeypatch):
     login(client, "m@x.cl", sent["b"].split("\n\n")[1])
     assert client.get("/api/jobs").status_code == 403
     assert client.get("/api/auth/me").status_code == 200
+
+
+def test_cover_extraction(tmp_path):
+    import shutil
+    import subprocess
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        return
+    from app import jobs
+    img = tmp_path / "c.png"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=red:s=64x64", "-frames:v", "1", str(img)], check=True)
+    mp3 = tmp_path / "a.mp3"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=d=1", "-i", str(img), "-map", "0", "-map", "1",
+                    "-metadata", "title=T", "-metadata", "artist=A", "-id3v2_version", "3", str(mp3)], check=True)
+    assert jobs.tags(mp3)["title"] == "T"
+    out = jobs.cover(mp3, tmp_path / "cover.jpg")
+    assert out and (tmp_path / "cover.jpg").stat().st_size > 0
+    assert jobs.cover(tmp_path / "missing.mp3", tmp_path / "x.jpg") == ""

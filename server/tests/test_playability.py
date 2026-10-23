@@ -1,3 +1,5 @@
+import random
+
 import pytest
 from autochart import playability as P
 from helpers import cn
@@ -34,3 +36,20 @@ def test_finalize_sustains_trims():
     assert n[0].sustain == 0     # recortado a <1/2 beat
     n = P.finalize_sustains([cn(0, 0, dur=400), cn(576, 1)], P.DIFF["Expert"])
     assert n[0].sustain == 400 and P.lint(n, "Expert") == []
+
+
+def test_span():
+    t = [cn(0, 0), cn(48, 4), cn(96, 0), cn(144, 4)]
+    assert "SPAN" in rules(t)
+    assert rules(P.smooth(t, P.DIFF["Expert"])) == set()
+
+
+def test_smooth_property():
+    rnd = random.Random(7)
+    for _ in range(200):
+        tick, tr = 0, []
+        for _ in range(rnd.randint(4, 30)):
+            tick += rnd.choice((48, 64, 96, 192, 288))
+            tr.append(cn(tick, rnd.randint(0, 4)))
+        bad = rules(P.smooth(tr, P.DIFF["Expert"])) & {"SPAN", "R1", "R2"}
+        assert not bad, (bad, tr)

@@ -49,6 +49,9 @@ def download(url: str, dest: Path) -> dict:
             j = json.loads(info.read_text(encoding="utf-8"))
             meta["title"] = j.get("track") or j.get("title") or ""
             meta["artist"] = j.get("artist") or j.get("uploader") or ""
+            meta["album"] = j.get("album") or ""
+            meta["genre"] = (j.get("genre") or "").split(",")[0].strip()
+            meta["year"] = str(j.get("release_year") or (j.get("release_date") or j.get("upload_date") or "")[:4] or "")
         except (OSError, ValueError):
             pass
     thumb = dest / "input.jpg"
@@ -68,6 +71,36 @@ def tags(path: Path) -> dict:
     except Exception:
         pass
     return {}
+
+
+def cover(path: Path, dest: Path) -> str:
+    """Carátula incrustada (ID3/MP4/FLAC/Ogg) -> dest en JPEG; '' si no hay."""
+    try:
+        import base64
+        import mutagen
+        from mutagen.flac import Picture
+        f = mutagen.File(path)
+        raw = b""
+        if f is None:
+            return ""
+        if getattr(f, "pictures", None):
+            raw = f.pictures[0].data
+        elif f.tags is not None and hasattr(f.tags, "getall") and f.tags.getall("APIC"):
+            raw = f.tags.getall("APIC")[0].data
+        elif f.tags is not None and f.tags.get("covr"):
+            raw = bytes(f.tags["covr"][0])
+        elif f.tags is not None and f.tags.get("metadata_block_picture"):
+            raw = Picture(base64.b64decode(f.tags["metadata_block_picture"][0])).data
+        if not raw:
+            return ""
+        tmp = dest.with_suffix(".src")
+        tmp.write_bytes(raw)
+        r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(tmp), "-frames:v", "1", str(dest)],
+                           capture_output=True, timeout=60)
+        tmp.unlink(missing_ok=True)
+        return str(dest) if r.returncode == 0 and dest.is_file() else ""
+    except Exception:
+        return ""
 
 
 def _notify(job: dict, subject: str, body: str) -> None:
@@ -93,6 +126,9 @@ def process(job: dict) -> None:
     else:
         meta["source"] = job["src"]
         meta.update({k: v for k, v in tags(Path(job["src"])).items() if v})
+        thumb = cover(Path(job["src"]), jdir / "cover.jpg")
+        if thumb:
+            meta["thumb"] = thumb
     meta["title"] = job["title"] or meta.get("title") or Path(meta["source"]).stem
     meta["artist"] = job["artist"] or meta.get("artist") or "Desconocido"
     res = pipeline.run(jdir, meta, progress)

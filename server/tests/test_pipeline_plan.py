@@ -22,10 +22,9 @@ def test_variants():
     notes = [Note(0.0, 0.2, 60, .8), Note(0.0, 0.2, 40, .8), Note(0.26, 0.4, 62, .8)]
     assert [n.pitch for n in PL.apply_variant(notes, "lowest")[0]] == [40, 62]
     many = [Note(0.1 * i, 0.1 * i + .05, 60 + i % 5, 0.2 + i / 100) for i in range(50)]
-    kept, window, fmap = PL.apply_variant(many, "rhythm")
-    assert len(kept) == 50 and fmap is not None          # no omite notas
-    assert [fmap(f) for f in range(5)] == [1, 2, 3, 4, 3]
-    assert [PL.FRET_MAPS["mirror"](f) for f in range(5)] == [4, 3, 2, 1, 0]
+    kept, window, shift = PL.apply_variant(many, "rhythm")
+    assert len(kept) == 50 and shift == -5               # no omite notas
+    assert PL.apply_variant(many, "keys")[2] == 7 and PL.apply_variant(many, "")[2] == 0
 
 
 def test_sparse_parts_are_rebuilt_from_guitar():
