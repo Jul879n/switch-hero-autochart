@@ -34,11 +34,18 @@ def test_click_track():
     assert all(abs(b - 120000) <= 1000 for _, b in g.bpm_events()[2:-2])
 
 
-def test_steady_fit_removes_jitter():
+def test_steady_fit_removes_jitter_and_outliers():
     from autochart.tempo import steady_fit
     rng = np.random.default_rng(0)
     beats = 1.0 + 0.5 * np.arange(60) + rng.normal(0, 0.01, 60)
+    beats[10] += 0.12     # beat mal detectado
+    beats[11] -= 0.1
     fit = steady_fit(beats)
     assert np.allclose(np.diff(fit), 0.5, atol=1e-3)
-    varied = np.cumsum(np.r_[1.0, np.linspace(0.5, 0.35, 59)])   # acelera: no se toca
-    assert np.array_equal(steady_fit(varied), varied)
+
+
+def test_steady_fit_keeps_tempo_changes():
+    from autochart.tempo import steady_fit
+    varied = np.cumsum(np.r_[1.0, np.linspace(0.6, 0.3, 59)])   # acelera mucho
+    out = steady_fit(varied)
+    assert np.diff(out)[0] > np.diff(out)[-1] * 1.5

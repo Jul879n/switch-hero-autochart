@@ -45,9 +45,9 @@ class Diff:
 
 DIFF = {
     "Expert": Diff("Expert", SIXTEENTH, 12, 4, 3, False, 2, TICKS),
-    "Hard": Diff("Hard", EIGHTH, 8, 4, 2, False, 2, TICKS),
-    "Medium": Diff("Medium", TICKS, 5, 3, 2, True, 1, HALF_BEAT),
-    "Easy": Diff("Easy", TICKS * 2, 3, 2, 1, True, 1, HALF_BEAT),
+    "Hard": Diff("Hard", SIXTEENTH, 7, 4, 2, False, 2, TICKS),
+    "Medium": Diff("Medium", EIGHTH, 4, 3, 2, True, 1, HALF_BEAT),
+    "Easy": Diff("Easy", TICKS, 2, 2, 1, True, 1, HALF_BEAT),
 }
 
 

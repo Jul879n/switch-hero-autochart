@@ -9,7 +9,9 @@ def sixteen():
 
 def test_counts():
     r = reduce(sixteen())
-    assert len(r["Hard"]) == 8 and len(r["Medium"]) == 4 and len(r["Easy"]) == 2
+    assert len(r["Easy"]) == 4 and len(r["Medium"]) == 8
+    assert len(r["Medium"]) < len(r["Hard"]) <= len(r["Expert"])
+    assert len(r["Expert"]) > len(r["Hard"])
 
 
 def test_ranges_and_chords():

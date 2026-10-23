@@ -23,19 +23,20 @@ def run(wav, out_dir, on_progress: Callable[[int], None] | None = None) -> dict:
     wav, out_dir = Path(wav), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, "-m", "demucs", "-n", MODEL, "-j", "1", "-o", str(out_dir), str(wav)]
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)   # tqdm escribe en stdout o stderr
     tail, buf, last = b"", b"", -1
-    assert proc.stderr is not None
+    stream = proc.stdout
+    assert stream is not None
     while True:
-        chunk = proc.stderr.read1(4096) if hasattr(proc.stderr, "read1") else proc.stderr.read(4096)
+        chunk = stream.read1(4096) if hasattr(stream, "read1") else stream.read(4096)
         if not chunk:
             break
         tail = (tail + chunk)[-600:]
-        buf = (buf + chunk)[-64:]
-        m = _PCT.findall(buf)
-        if m and on_progress:
-            pct = max(0, min(100, int(m[-1])))
-            if pct != last:
+        data = buf + chunk
+        buf = data[-8:]       # solo para tokens partidos entre lecturas
+        for raw in _PCT.findall(data):
+            pct = max(0, min(100, int(raw)))
+            if pct > last and on_progress:      # solo avanza; el buffer puede repetir lecturas viejas
                 last = pct
                 on_progress(pct)
     if proc.wait() != 0:

@@ -76,14 +76,24 @@ class Grid:
         return self._anchors()[1][-1]
 
 
-def beat_grid(wav_path: str) -> tuple:
-    """librosa -> (Grid, envolvente de onsets, tiempos de la envolvente)."""
+def beat_grid(wav_path: str, drums_path: str | None = None) -> tuple:
+    """librosa -> (Grid, envolvente de onsets, tiempos de la envolvente).
+
+    Si hay stem de batería, su pulso (más limpio) se suma a la envolvente de la mezcla.
+    """
     import librosa
 
-    y, sr = librosa.load(wav_path, sr=22050, mono=True)
-    hop = 512
+    sr, hop = 22050, 512
+    y, _ = librosa.load(wav_path, sr=sr, mono=True)
     env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
-    _, frames = librosa.beat.beat_track(onset_envelope=env, sr=sr, hop_length=hop, units="frames")
+    env = env / (float(np.max(env)) or 1.0)
+    if drums_path:
+        yd, _ = librosa.load(drums_path, sr=sr, mono=True)
+        envd = librosa.onset.onset_strength(y=yd, sr=sr, hop_length=hop)
+        n = min(len(env), len(envd))
+        env = env[:n] + 1.5 * envd[:n] / (float(np.max(envd[:n])) or 1.0)
+    _, frames = librosa.beat.beat_track(onset_envelope=env, sr=sr, hop_length=hop, units="frames",
+                                        tightness=300)
     times = librosa.frames_to_time(frames, sr=sr, hop_length=hop)
     if len(times) < 2:
         raise ValueError("No se detectaron beats suficientes")
@@ -91,22 +101,32 @@ def beat_grid(wav_path: str) -> tuple:
     return grid_from_beats(times, env, ev_t), env, ev_t
 
 
-def steady_fit(times, tol: float = 0.04):
-    """Si el tempo es casi constante, ajusta una rejilla lineal (mínimos cuadrados) a los beats.
+def steady_fit(times, inlier: float = 0.15, min_inliers: float = 0.8):
+    """Tempo constante: ajuste lineal robusto de los beats (descarta atípicos y reajusta).
 
-    Elimina el jitter del tracker; con tempo variable (desviación > tol) deja los beats intactos.
+    Si al menos `min_inliers` de los beats caen a menos de `inlier` de un beat de la recta, devuelve la
+    rejilla ajustada para todos los beats. Si no, el tempo es variable: suaviza los intervalos con una
+    mediana móvil y reancla por mínimos cuadrados.
     """
-    times = np.asarray(times, dtype=float)
-    if len(times) < 8:
-        return times
-    iv = np.diff(times)
-    med = float(np.median(iv))
-    if med <= 0 or float(np.max(np.abs(np.convolve(iv, np.ones(8) / 8, "valid") - med))) / med > tol:
-        return times
-    k = np.arange(len(times))
-    slope, icpt = np.polyfit(k, times, 1)
-    fit = icpt + slope * k
-    return fit if float(np.max(np.abs(fit - times))) < 0.5 * med * 0.5 else times
+    t = np.asarray(times, dtype=float)
+    if len(t) < 8:
+        return t
+    k = np.arange(len(t))
+    mask = np.ones(len(t), dtype=bool)
+    for _ in range(6):
+        slope, icpt = np.polyfit(k[mask], t[mask], 1)
+        res = np.abs(t - (icpt + slope * k))
+        new = res < inlier * slope
+        if new.sum() < 4 or np.array_equal(new, mask):
+            break
+        mask = new
+    if slope > 0 and float(np.mean(res < inlier * slope)) >= min_inliers:
+        return icpt + slope * k
+    iv = np.diff(t)
+    pad = np.pad(iv, 4, mode="edge")
+    smooth = np.array([np.median(pad[i:i + 9]) for i in range(len(iv))])
+    rebuilt = np.concatenate([[0.0], np.cumsum(smooth)])
+    return rebuilt + float(np.mean(t - rebuilt))
 
 
 def grid_from_beats(times, env=None, env_t=None) -> Grid:

@@ -83,6 +83,7 @@ def reduce_one(expert: list, difficulty: str, t2s: Callable[[float], float] | No
     if master is not None:
         notes = unify_repeats(notes, master)
         notes = _enforce_sep(notes, d.min_sep)
+        notes = _enforce_nps(notes, d.max_nps, t2s)     # unificar compases puede reintroducir notas
     return P.finalize_sustains(notes, d)
 
 

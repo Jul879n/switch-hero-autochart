@@ -16,6 +16,43 @@ from .chartwriter import Track
 # instrumento -> stem preferido
 ASSIGN = {"guitar": "guitar", "rhythm": "other", "bass": "bass", "keys": "piano", "drums": "drums"}
 MIN_NOTES = 8
+# Stems candidatos por instrumento, en orden de preferencia. El primero es el propio; los demás son
+# respaldo para que toda canción tenga todas las partes (con una variante si el stem ya lo usa otra parte).
+CANDIDATES = {
+    "guitar": ("guitar", "other", "vocals", "piano", "bass"),
+    "bass": ("bass", "other", "guitar", "piano"),
+    "rhythm": ("other", "guitar", "vocals", "piano"),
+    "keys": ("piano", "other", "vocals", "guitar"),
+}
+VARIANT = {"guitar": "", "bass": "lowest", "rhythm": "sparse", "keys": "sparse"}
+
+
+def plan_sources(silent: dict) -> dict:
+    """{instrumento: (stem, variante)}. La variante diferencia partes que comparten stem."""
+    plan: dict = {}
+    used: set = set()
+    for instr in ("guitar", "bass", "rhythm", "keys"):
+        stem = next((c for c in CANDIDATES[instr] if not silent.get(c, True)), None)
+        if stem is None:
+            continue
+        shared = stem in used
+        plan[instr] = (stem, VARIANT[instr] if shared or stem != CANDIDATES[instr][0] else "")
+        used.add(stem)
+    return plan
+
+
+def apply_variant(notes: list, variant: str, sec_to_tick) -> list:
+    """lowest: la nota más grave de cada golpe (línea de bajo). sparse: solo notas sobre el pulso de corcheas."""
+    if variant == "lowest":
+        by: dict = {}
+        for n in notes:
+            k = round(n.onset / 0.03)
+            if k not in by or n.pitch < by[k].pitch:
+                by[k] = n
+        return sorted(by.values(), key=lambda n: n.onset)
+    if variant == "sparse":
+        return [n for n in notes if (sec_to_tick(n.onset) + 12) % P.EIGHTH < 24]
+    return list(notes)
 
 
 class ChartError(Exception):
@@ -68,12 +105,13 @@ def _nps(notes: list, secs: float) -> float:
 
 
 def build_tracks(stem_notes: dict, drum_events, grid: tempo.Grid, quiet: set, secs: float):
-    """-> (tracks, nps, grid) con lint aplicado."""
+    """stem_notes: {instr: (notas, variante)} -> (tracks, nps) con lint aplicado."""
     tracks: dict = {}
     nps: dict = {}
     t2s = grid.tick_to_sec
 
-    def add(key, expert):
+    def add(key, notes, variant):
+        expert = frets.map(apply_variant(notes, variant, grid.sec_to_tick), grid.sec_to_tick, quiet)
         if len(expert) < MIN_NOTES:
             return
         per = difficulty.reduce(expert, t2s)
@@ -86,8 +124,14 @@ def build_tracks(stem_notes: dict, drum_events, grid: tempo.Grid, quiet: set, se
                                  "; ".join(f"{v.rule}@{v.tick} {v.msg}" for v in bad[:5]))
         nps[key] = _nps(per["Expert"], secs)
 
-    for key, notes in stem_notes.items():
-        add(key, frets.map(notes, grid.sec_to_tick, quiet))
+    for key, (notes, variant) in stem_notes.items():
+        add(key, notes, variant)
+    # respaldo final: toda parte que falte se deriva de la guitarra (variante distinta)
+    if "guitar" in stem_notes or tracks:
+        base = stem_notes.get("guitar", (None, ""))[0] or next(iter(stem_notes.values()))[0]
+        for key in ("bass", "rhythm", "keys"):
+            if key not in tracks:
+                add(key, base, VARIANT[key])
     if "rhythm" in tracks:
         tracks["coop"] = tracks["rhythm"]
         nps["coop"] = nps["rhythm"]
@@ -128,38 +172,27 @@ def run(job_dir, meta: dict, progress: Callable[[str, int], None] = lambda s, p:
     silent = {k: audio.is_silent(p) for k, p in stems.items()}
 
     progress("tempo", 40)
-    grid, env, env_t = tempo.beat_grid(str(wav))
+    grid, env, env_t = tempo.beat_grid(str(wav), None if silent["drums"] else str(stems["drums"]))
 
     progress("transcripcion", 50)
-    choice: dict = {}
-    for instr, stem in ASSIGN.items():
-        if instr == "drums":
-            continue
-        if not silent[stem]:
-            choice[instr] = stem
-    if "guitar" not in choice:
-        # guitarra silenciosa: el primer stem melódico con señal (other, vocals, piano, bass)
-        fallback = next((k for k in ("other", "vocals", "piano", "bass") if not silent[k]), None)
-        if fallback is None:
-            raise ChartError("El audio no tiene señal suficiente para generar una carta")
-        choice["guitar"] = fallback
-    transcribed: dict = {}
+    plan = plan_sources(silent)
+    if "guitar" not in plan:
+        raise ChartError("El audio no tiene señal suficiente para generar una carta")
     cache: dict = {}
-    for i, (instr, stem) in enumerate(choice.items()):
-        if stem not in cache:
-            cache[stem] = transcribe.notes(stems[stem])
-        transcribed[instr] = cache[stem]
-        progress("transcripcion", 50 + int(25 * (i + 1) / len(choice)))
+    for i, stem in enumerate(dict.fromkeys(st for st, _ in plan.values())):
+        cache[stem] = transcribe.notes(stems[stem])
+        progress("transcripcion", 50 + int(25 * (i + 1) / len(plan)))
+    transcribed = {instr: (cache[stem], variant) for instr, (stem, variant) in plan.items()}
     drum_events = [] if silent["drums"] else drums.hits(str(stems["drums"]))
 
     # R6: primera nota >= 3 s
-    firsts = [n[0].onset for n in transcribed.values() if n]
+    firsts = [n[0].onset for n, _ in transcribed.values() if n]
     lead = 0.0
     if firsts and min(firsts) < P.FIRST_NOTE_MIN_SEC:
         lead = P.FIRST_NOTE_MIN_SEC - min(firsts)
     if lead:
         shift = lambda ns: [frets.Note(n.onset + lead, n.offset + lead, n.pitch, n.vel) for n in ns]
-        transcribed = {k: shift(v) for k, v in transcribed.items()}
+        transcribed = {k: (shift(v), var) for k, (v, var) in transcribed.items()}
         drum_events = [(t + lead, l) for t, l in drum_events]
         grid = tempo.Grid.build([b + lead for b in grid.beats], grid.phase)
         env_t = env_t + lead
@@ -167,7 +200,7 @@ def run(job_dir, meta: dict, progress: Callable[[str, int], None] = lambda s, p:
 
     progress("carta", 78)
     # compases suaves (R3): RMS bajo el percentil 30 del stem principal
-    gm = choice["guitar"]
+    gm = plan["guitar"][0]
     m_count = int(grid.end_tick // P.MEASURE) + 1
     spans = [(grid.tick_to_sec(m * P.MEASURE) - lead, grid.tick_to_sec((m + 1) * P.MEASURE) - lead)
              for m in range(m_count)]
