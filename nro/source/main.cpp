@@ -116,6 +116,30 @@ static size_t toFile(char* p, size_t sz, size_t n, void* ud) {
     return fwrite(p, sz, n, static_cast<FILE*>(ud)) * sz;
 }
 
+// La red nunca debe congelar la consola: cada transferencia atiende a la consola (HOME, +) y se puede cancelar.
+static PadState* g_pad = nullptr;
+static bool g_stop = false;              // el usuario pidio salir (+ o HOME) durante una transferencia
+static bool g_showProgress = false;
+static std::string g_progName;
+static u64 g_progTick = 0;
+
+static int progressCb(void*, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
+    if (!appletMainLoop()) { g_stop = true; return 1; }
+    if (g_pad) {
+        padUpdate(g_pad);
+        if (padGetButtonsDown(g_pad) & HidNpadButton_Plus) { g_stop = true; return 1; }
+    }
+    if (g_showProgress && dltotal > 0) {
+        u64 now = armTicksToNs(armGetSystemTick()) / 1000000ULL;
+        if (now - g_progTick >= 200) {
+            g_progTick = now;
+            printf("\r  %3d%%  %-50.50s", (int)(dlnow * 100 / dltotal), g_progName.c_str());
+            consoleUpdate(NULL);
+        }
+    }
+    return 0;
+}
+
 static CURL* newHandle(const Config& c, const std::string& path, curl_slist** hdr) {
     CURL* h = curl_easy_init();
     if (!h) return nullptr;
@@ -127,7 +151,10 @@ static CURL* newHandle(const Config& c, const std::string& path, curl_slist** hd
     curl_easy_setopt(h, CURLOPT_HTTPHEADER, *hdr);
     curl_easy_setopt(h, CURLOPT_CAINFO, CA_PATH);
     curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(h, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, progressCb);
     curl_easy_setopt(h, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(h, CURLOPT_LOW_SPEED_TIME, 30L);
     return h;
@@ -147,6 +174,7 @@ static std::string fetchSongs(const Config& c, std::vector<Song>& out, bool& aut
     CURL* h = newHandle(c, "/api/switch/songs", &hdr);
     if (!h) return "No se pudo iniciar curl";
     std::string body;
+    curl_easy_setopt(h, CURLOPT_TIMEOUT, 20L);
     curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, toString);
     curl_easy_setopt(h, CURLOPT_WRITEDATA, &body);
     CURLcode rc = curl_easy_perform(h);
@@ -154,6 +182,7 @@ static std::string fetchSongs(const Config& c, std::vector<Song>& out, bool& aut
     curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code);
     curl_easy_cleanup(h);
     curl_slist_free_all(hdr);
+    if (g_stop) return "Cancelado";
     if (rc != CURLE_OK) return std::string("Red: ") + curl_easy_strerror(rc);
     if (code == 401) { authFail = true; return "La sesión venció; hay que vincular la Switch de nuevo"; }
     if (code == 403) return "Cambie su contraseña en la web para continuar";
@@ -202,14 +231,18 @@ static std::string installSong(const Config& c, const Song& s) {
         if (!h) { fclose(fp); remove(part.c_str()); return "No se pudo iniciar curl"; }
         curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, toFile);
         curl_easy_setopt(h, CURLOPT_WRITEDATA, fp);
+        g_progName = ascii(f.name); g_progTick = 0; g_showProgress = true;
         CURLcode rc = curl_easy_perform(h);
+        g_showProgress = false;
+        printf("\r  100%%  %-50.50s\n", g_progName.c_str());
         long code = 0;
         curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code);
         curl_easy_cleanup(h);
         curl_slist_free_all(hdr);
         fclose(fp);
         std::string err;
-        if (rc != CURLE_OK) err = std::string("Red: ") + curl_easy_strerror(rc);
+        if (g_stop) err = "Cancelado";
+        else if (rc != CURLE_OK) err = std::string("Red: ") + curl_easy_strerror(rc);
         else if (code != 200) err = "HTTP " + std::to_string(code) + (code == 401 || code == 403 ? " (sesión inválida)" : "");
         else if (fileSize(part) != f.bytes) err = "Tamaño incorrecto en " + f.name;
         if (!err.empty()) { remove(part.c_str()); return err; }
@@ -226,7 +259,7 @@ static long postJson(const Config& c, const std::string& path, const std::string
     resp.clear();
     curl_easy_setopt(h, CURLOPT_POST, 1L);
     curl_easy_setopt(h, CURLOPT_POSTFIELDS, body.c_str());
-    curl_easy_setopt(h, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(h, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, toString);
     curl_easy_setopt(h, CURLOPT_WRITEDATA, &resp);
     CURLcode rc = curl_easy_perform(h);
@@ -258,7 +291,7 @@ static u64 nowSec() { return armGetSystemTick() / armGetSystemTickFreq(); }
 
 // Muestra el QR y espera a que el teléfono confirme. Devuelve false si el usuario sale (+).
 static bool pairFlow(Config& cfg, PadState& pad) {
-    while (appletMainLoop()) {
+    while (appletMainLoop() && !g_stop) {
         consoleClear();
         printf("\x1b[1mSH Installer - vincular esta Switch\x1b[0m\n\nPidiendo codigo al servidor...\n");
         consoleUpdate(NULL);
@@ -291,7 +324,7 @@ static bool pairFlow(Config& cfg, PadState& pad) {
         printQr(url);
         consoleUpdate(NULL);
         u64 start = nowSec(), last = 0;
-        while (appletMainLoop() && nowSec() - start < (u64)ttl) {
+        while (appletMainLoop() && !g_stop && nowSec() - start < (u64)ttl) {
             padUpdate(&pad);
             if (padGetButtonsDown(&pad) & HidNpadButton_Plus) return false;
             if (nowSec() - last >= 3) {
@@ -321,7 +354,7 @@ static void drawMain(const Config& cfg, const std::string& status, const std::st
     std::string host = cfg.server;
     auto p = host.find("://");
     if (p != std::string::npos) host = host.substr(p + 3);
-    printf("\x1b[1;36mSH Installer 2.0.1\x1b[0m  %s\n", ascii(host).c_str());
+    printf("\x1b[1;36mSH Installer 2.0.2\x1b[0m  %s\n", ascii(host).c_str());
     if (status.empty())
         printf("\x1b[1;32m[ CONECTADA ]\x1b[0m esperando envios desde la web (revisa cada %d s)\n", REFRESH_SEC);
     else
@@ -361,6 +394,7 @@ int main() {
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
     padInitializeDefault(&pad);
+    g_pad = &pad;
     socketInitializeDefault();
     romfsInit();
     curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -375,7 +409,7 @@ int main() {
     bool redraw = true, quit = !ok, refresh = ok;
     u64 lastFetch = 0;
     std::string info;
-    while (appletMainLoop() && !quit) {
+    while (appletMainLoop() && !quit && !g_stop) {
         padUpdate(&pad);
         u64 down = padGetButtonsDown(&pad);
         if (down & HidNpadButton_Plus) break;
@@ -394,6 +428,7 @@ int main() {
             std::vector<Song> fresh;
             status = fetchSongs(cfg, fresh, authFail);
             lastFetch = nowSec();
+            if (g_stop) break;
             if (authFail) {
                 cfg.token.clear();
                 if (!pairFlow(cfg, pad)) break;
