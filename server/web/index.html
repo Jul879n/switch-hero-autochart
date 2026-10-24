@@ -88,6 +88,33 @@
       </form>
     </section>
 
+    <section id="pair" class="card" aria-labelledby="pair-h" hidden>
+      <h2 id="pair-h">Vincular la Switch</h2>
+      <p>La Switch muestra el código <strong id="pair-code"></strong>. Confirme que es la suya para vincularla a esta cuenta.</p>
+      <button type="button" id="pair-btn" class="btn">Vincular a mi cuenta</button>
+      <p id="pair-msg" class="msg" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="card" aria-labelledby="sw-app-h">
+      <h2 id="sw-app-h">Switch (app SH Installer)</h2>
+      <p>Abra «SH Installer» en la Switch y escanee el QR con el teléfono para vincularla. Después, las canciones
+        que envíe aquí se instalan solas mientras la app esté abierta.</p>
+      <span id="swapp-state" class="badge error" role="status" aria-live="polite">Switch no conectada</span>
+    </section>
+
+    <section class="card" aria-labelledby="sw-h">
+      <h2 id="sw-h">Switch (FTP)</h2>
+      <form id="sw-form" novalidate>
+        <div class="row">
+          <div><label for="sw-host">IP de la Switch</label><input id="sw-host" type="text" inputmode="decimal" placeholder="192.168.1.50" autocomplete="off"></div>
+          <div><label for="sw-port">Puerto</label><input id="sw-port" type="number" min="1" max="65535" value="5000"></div>
+        </div>
+        <button type="submit" id="sw-btn" class="btn">Conectar</button>
+        <span id="sw-state" class="badge" role="status" aria-live="polite">Desconectada</span>
+        <p id="sw-msg" class="msg" role="alert"></p>
+      </form>
+    </section>
+
     <section aria-labelledby="songs-h">
       <h2 id="songs-h">Canciones</h2>
       <ul id="jobs" class="list"></ul>

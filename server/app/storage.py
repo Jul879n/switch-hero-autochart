@@ -41,6 +41,8 @@ def init() -> None:
     ucols = [r[1] for r in _conn.execute('PRAGMA table_info(users)')]
     if 'must_change' not in ucols:
         _conn.execute('ALTER TABLE users ADD COLUMN must_change INTEGER NOT NULL DEFAULT 0')
+    if 'sent' not in cols:
+        _conn.execute('ALTER TABLE jobs ADD COLUMN sent INTEGER NOT NULL DEFAULT 0')
     if 'user_id' not in cols:
         _conn.execute('ALTER TABLE jobs ADD COLUMN user_id INTEGER DEFAULT 0')
     _conn.commit()

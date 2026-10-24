@@ -1,7 +1,9 @@
 """API FastAPI + front estático."""
 from __future__ import annotations
 
+import hmac
 import re
+import secrets
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,13 +11,15 @@ from pathlib import Path
 import ipaddress
 import os
 import socket
+import time
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, jobs, mail, storage
+from . import auth, ftp, jobs, mail, storage
 
 MAX_BYTES = 100 * 1024 * 1024
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -69,7 +73,7 @@ def _public_url_ok(url: str) -> bool:
 
 def _public(j: dict) -> dict:
     out = {k: j[k] for k in ("id", "status", "stage", "progress", "title", "artist", "src_kind",
-                              "error", "created_at", "folder")}
+                              "error", "created_at", "folder", "sent")}
     if j["status"] == "done":
         out["info"] = _song_info(j)
     return out
@@ -317,26 +321,142 @@ def job_zip(jid: str, user: dict = Depends(auth.current_user)):
     return FileResponse(z, media_type="application/zip", filename=f"{j['folder']}.zip")
 
 
+@app.post("/api/ftp/check")
+async def ftp_check(request: Request, user: dict = Depends(auth.current_user)):
+    body = await request.json()
+    try:
+        port = int(body.get("port") or 5000)
+        host = await run_in_threadpool(ftp.check, str(body.get("host", "")), port)
+    except ValueError:
+        raise HTTPException(400, "Puerto inválido")
+    except ftp.FtpError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "host": host, "port": port}
+
+
+@app.post("/api/jobs/{jid}/ftp")
+async def job_ftp(jid: str, request: Request, user: dict = Depends(auth.current_user)):
+    j = _job_or_404(jid, user)
+    if j["status"] != "done" or not j["folder"]:
+        raise HTTPException(409, "La canción aún no está lista")
+    body = await request.json()
+    try:
+        port = int(body.get("port") or 5000)
+        n = await run_in_threadpool(ftp.push, str(body.get("host", "")), port, _song_dir(j), j["folder"])
+    except ValueError:
+        raise HTTPException(400, "Puerto inválido")
+    except ftp.FtpError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "files": n}
+
+
 def _files(j: dict) -> list:
     d = _song_dir(j)
     return [{"name": f.name, "bytes": f.stat().st_size} for f in sorted(d.iterdir()) if f.is_file()] \
         if d.is_dir() else []
 
 
+_switch_seen: dict = {}      # id de usuario -> último contacto de su Switch (.nro); sirve de «conectada»
+SWITCH_ALIVE_SEC = 45
+
+
+@app.post("/api/switch/login")
+async def switch_login(request: Request):
+    """Correo y contraseña de la cuenta -> token de sesión para el .nro (sin cookies)."""
+    body = await request.json()
+    ip = request.client.host if request.client else "?"
+    token = auth.login(auth.norm_email(str(body.get("email", ""))), str(body.get("password", "")), ip, forever=True)
+    return {"token": token}
+
+
+# Vinculación por QR: la Switch pide un código, el usuario lo confirma desde el teléfono con su sesión.
+PAIR_TTL = 600
+PAIR_MAX = 200
+PAIR_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_pairs: dict = {}            # código -> {"secret", "exp", "token"}
+
+
+def _pairs_purge() -> None:
+    now = time.time()
+    for c in [c for c, p in _pairs.items() if p["exp"] < now]:
+        del _pairs[c]
+
+
+@app.post("/api/switch/pair")
+def pair_start(request: Request):
+    _pairs_purge()
+    if len(_pairs) >= PAIR_MAX:
+        raise HTTPException(429, "Demasiadas vinculaciones pendientes; intente en unos minutos")
+    code = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(6))
+    secret = secrets.token_urlsafe(24)
+    _pairs[code] = {"secret": secret, "exp": time.time() + PAIR_TTL, "token": None}
+    return {"code": code, "secret": secret, "expires_in": PAIR_TTL, "url": f"{_base_url(request)}/?pair={code}"}
+
+
+@app.post("/api/switch/pair/poll")
+async def pair_poll(request: Request):
+    body = await request.json()
+    secret = str(body.get("secret", ""))
+    _pairs_purge()
+    for code, p in _pairs.items():
+        if hmac.compare_digest(p["secret"], secret):
+            if p["token"] is None:
+                return {"status": "wait"}
+            del _pairs[code]
+            return {"status": "ok", "token": p["token"]}
+    raise HTTPException(410, "Código vencido")
+
+
+@app.post("/api/switch/pair/confirm")
+async def pair_confirm(request: Request, user: dict = Depends(auth.current_user)):
+    body = await request.json()
+    _pairs_purge()
+    p = _pairs.get(str(body.get("code", "")).strip().upper())
+    if not p or p["token"] is not None:
+        raise HTTPException(404, "Código inválido o vencido")
+    p["token"] = auth.new_session(user["id"], forever=True)
+    return {"ok": True}
+
+
+@app.get("/api/switch/status")
+def switch_status(user: dict = Depends(auth.current_user)):
+    return {"connected": time.time() - _switch_seen.get(user["id"], 0.0) < SWITCH_ALIVE_SEC}
+
+
+@app.post("/api/jobs/{jid}/send")
+def job_send(jid: str, user: dict = Depends(auth.current_user)):
+    """Marca la canción para que la Switch la instale sola en su próxima consulta."""
+    j = _job_or_404(jid, user)
+    if j["status"] != "done":
+        raise HTTPException(409, "La canción aún no está lista")
+    storage.update(jid, sent=1)
+    return {"ok": True}
+
+
+@app.post("/api/switch/songs/{jid}/ack")
+def switch_ack(jid: str, user: dict = Depends(auth.installer_or_user)):
+    _job_or_404(jid, None if user["role"] == "installer" else user)
+    storage.update(jid, sent=0)
+    return {"ok": True}
+
+
 @app.get("/api/switch/songs")
 def switch_songs(user: dict = Depends(auth.installer_or_user)):
+    if user.get("via") == "switch":
+        _switch_seen[user["id"]] = time.time()
     out = []
-    for j in storage.list_jobs("done", None if user["role"] in ("admin", "installer") else user["id"]):
+    # una Switch con sesión de cuenta ve solo las canciones de esa cuenta; el token fijo, todas
+    for j in storage.list_jobs("done", None if user["role"] == "installer" else user["id"]):
         files = _files(j)
         if files:
             out.append({"id": j["id"], "name": j["title"], "artist": j["artist"], "folder": j["folder"],
-                        "bytes": sum(f["bytes"] for f in files), "files": files})
+                        "bytes": sum(f["bytes"] for f in files), "files": files, "pending": bool(j["sent"])})
     return out
 
 
 @app.get("/api/switch/songs/{jid}/{name}")
 def switch_file(jid: str, name: str, user: dict = Depends(auth.installer_or_user)):
-    j = _job_or_404(jid, None if user["role"] in ("admin", "installer") else user)
+    j = _job_or_404(jid, None if user["role"] == "installer" else user)
     if j["status"] != "done" or name not in {f["name"] for f in _files(j)}:
         raise HTTPException(404, "Archivo inexistente")
     return FileResponse(_song_dir(j) / name)

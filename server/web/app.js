@@ -168,6 +168,28 @@ function render(list) {
       sv.addEventListener("click", () => saveToFolder(j, sv));
       acts.append(sv);
     }
+    if (j.status === "done") {
+      const q = el("button", { type: "button", className: "btn", textContent: j.sent ? "En cola para la Switch" : "Enviar a la Switch" });
+      q.disabled = !!j.sent;
+      q.addEventListener("click", async () => {
+        q.disabled = true;
+        try { await send("POST", `/api/jobs/${j.id}/send`); lastJobs = ""; refresh(); } catch (e) { q.disabled = false; alert(e.message); }
+      });
+      acts.append(q);
+    }
+    if (j.status === "done") {
+      const ftp = el("button", { type: "button", className: "btn ghost", textContent: "Enviar por FTP" });
+      ftp.addEventListener("click", async () => {
+        if (!sw.ok) { alert("Conecte primero la Switch en la sección «Switch (FTP)»."); return; }
+        ftp.disabled = true; ftp.textContent = "Enviando…";
+        try {
+          const r = await send("POST", `/api/jobs/${j.id}/ftp`, { host: sw.host, port: sw.port });
+          alert(`Enviada a la Switch (${r.files} archivos).`);
+        } catch (e) { sw.ok = false; swState(); alert(e.message); }
+        ftp.disabled = false; ftp.textContent = "Enviar por FTP";
+      });
+      acts.append(ftp);
+    }
     if (j.status !== "running") {
       const del = el("button", { type: "button", className: "btn danger", textContent: "Eliminar" });
       del.addEventListener("click", async () => {
@@ -181,6 +203,52 @@ function render(list) {
     ul.append(li);
   }
 }
+/* ---------- Switch por FTP ---------- */
+const sw = { host: localStorage.getItem("shHost") || "", port: Number(localStorage.getItem("shPort")) || 5000, ok: false };
+function swState() {
+  const b = $("sw-state");
+  b.textContent = sw.ok ? `Conectada · ${sw.host}:${sw.port}` : "Desconectada";
+  b.className = `badge ${sw.ok ? "done" : "error"}`;
+}
+async function swConnect(e) {
+  e?.preventDefault();
+  const host = $("sw-host").value.trim(), port = Number($("sw-port").value) || 5000;
+  const btn = $("sw-btn");
+  btn.disabled = true; btn.textContent = "Conectando…"; $("sw-msg").textContent = "";
+  try {
+    const r = await send("POST", "/api/ftp/check", { host, port });
+    Object.assign(sw, { host: r.host, port: r.port, ok: true });
+    localStorage.setItem("shHost", r.host); localStorage.setItem("shPort", String(r.port));
+  } catch (err) { sw.ok = false; $("sw-msg").textContent = err.message; }
+  btn.disabled = false; btn.textContent = "Conectar"; swState();
+}
+$("sw-form").addEventListener("submit", swConnect);
+$("sw-host").value = sw.host; $("sw-port").value = sw.port; swState();
+
+/* ---------- Switch (app) y vinculación por QR ---------- */
+async function swAppPoll() {
+  if ($("app").hidden) return;
+  try {
+    const r = await api("/api/switch/status");
+    const b = $("swapp-state");
+    b.textContent = r.connected ? "Switch conectada" : "Switch no conectada";
+    b.className = `badge ${r.connected ? "done" : "error"}`;
+  } catch { /* sin sesión */ }
+}
+setInterval(swAppPoll, 8000); swAppPoll();
+const pairCode = (new URLSearchParams(location.search).get("pair") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+if (pairCode) {
+  $("pair").hidden = false; $("pair-code").textContent = pairCode;
+  $("pair-btn").addEventListener("click", async () => {
+    $("pair-btn").disabled = true;
+    try {
+      await send("POST", "/api/switch/pair/confirm", { code: pairCode });
+      $("pair-msg").className = "msg ok"; $("pair-msg").textContent = "Listo: la Switch quedó vinculada. Puede volver a ella.";
+      history.replaceState(null, "", location.pathname);
+    } catch (e) { $("pair-btn").disabled = false; $("pair-msg").className = "msg"; $("pair-msg").textContent = e.message; }
+  });
+}
+
 async function refresh() {
   try {
     const list = await api("/api/jobs");

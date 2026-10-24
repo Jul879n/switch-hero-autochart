@@ -19,6 +19,10 @@ Genera cartas jugables para [Switch Hero](https://github.com/R-drg/switch-hero) 
 ## Pruebas
 `cd server && pytest` (las de tempo con audio requieren librosa).
 
-## .nro
+## .nro («SH Installer»)
 Compilar: `DEVKITPRO=/opt/devkitpro cmake -S nro -B nro/build -G Ninja -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/Switch.cmake && cmake --build nro/build`.
-Config en la SD: `sdmc:/switch/sh-installer/config.ini` con `server=https://…` y `token=…`.
+Copiar `nro/build/sh-installer.nro` a `sdmc:/switch/`. Al abrirlo por primera vez muestra un QR: escanéelo con el teléfono,
+inicie sesión en la web y pulse «Vincular». La sesión queda en `sdmc:/switch/sh-installer/config.ini`
+(`server=` es opcional; por defecto `https://switchhero.jarayacontreras.cl`). Desde la web (también desde el teléfono),
+«Enviar a la Switch» pone la canción en cola y la app la instala sola mientras esté abierta (consulta cada 10 s).
+`INSTALLER_TOKEN` sigue valiendo como `token=` fijo (ve todas las canciones).

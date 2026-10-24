@@ -145,7 +145,7 @@ def accept_invite(token: str, name: str, password: str) -> int:
 
 
 # --- sesiones ---
-def login(email: str, password: str, ip: str) -> str:
+def login(email: str, password: str, ip: str, forever: bool = False) -> str:
     now = time.time()
     key = (email, ip)
     _fails[key] = [t for t in _fails[key] if now - t < 600]
@@ -158,9 +158,16 @@ def login(email: str, password: str, ip: str) -> str:
     if not ok:
         _fails[key].append(now)
         raise HTTPException(401, "Correo o contraseña incorrectos")
+    return new_session(u["id"], forever)
+
+
+NEVER = 32503680000.0     # año 3000: sesiones de la Switch, que valen mientras la cuenta esté activa
+
+
+def new_session(uid: int, forever: bool = False) -> str:
     token = secrets.token_urlsafe(32)
     storage._q("INSERT INTO sessions(token_hash,user_id,expires) VALUES(?,?,?)",
-               (_th(token), u["id"], now + SESSION_TTL))
+               (_th(token), uid, NEVER if forever else time.time() + SESSION_TTL))
     return token
 
 
@@ -197,9 +204,18 @@ def admin_user(u: dict = Depends(current_user)) -> dict:
 
 
 def installer_or_user(request: Request) -> dict:
-    """Sesión web o token del instalador (.nro) en `Authorization: Bearer`."""
+    """Sesión web, sesión de la Switch (`Authorization: Bearer <token de /api/switch/login>`)
+    o token fijo del instalador (INSTALLER_TOKEN)."""
     expected = os.environ.get("INSTALLER_TOKEN", "")
     h = request.headers.get("authorization", "")
-    if expected and h.startswith("Bearer ") and hmac.compare_digest(h[7:], expected):
-        return {"id": 0, "role": "installer", "email": "installer"}
+    if h.startswith("Bearer "):
+        tok = h[7:]
+        if expected and hmac.compare_digest(tok, expected):
+            return {"id": 0, "role": "installer", "email": "installer"}
+        u = user_from_token(tok)
+        if u and not u.get("must_change"):
+            return {**u, "via": "switch"}
+        if u:
+            raise HTTPException(403, "Debe cambiar su contraseña en la web antes de continuar")
+        raise HTTPException(401, "Sesión inválida")
     return current_user(request)
