@@ -5,6 +5,7 @@
 
 #include <sys/stat.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -287,6 +288,79 @@ static void printQr(const std::string& text) {
     }
 }
 
+// El bloque de transferencia de sockets (bsd) queda prestado al sistema hasta que este cierra el cliente,
+// y con conexiones recien cerradas eso tarda mas que nuestra salida; libnx lo devuelve a malloc sin esperar.
+// hbloader carga el siguiente NRO al INICIO del heap y sphaira reserva mucha memoria al arrancar: si el
+// bloque queda ahi, cae (2347-0018 o Data Abort). Se reserva temporalmente casi todo el heap para que libnx
+// pida ese bloque al FINAL, donde ni hbloader ni el menu llegan, y luego se libera la reserva.
+static const size_t TAIL = 8u << 20;
+static u64 g_tmemAddr = 0, g_tmemSize = 0;      // bloque de sockets aparcado (se excluye del chequeo de salida)
+
+static Result initSocketsAtHeapTail() {
+    void* big = nullptr;
+    u64 hs = envHasHeapOverride() ? envGetHeapOverrideSize() : 0;
+    if (hs > TAIL * 4) big = malloc(hs - TAIL - (4u << 20));
+    Result rc = socketInitializeDefault();
+    free(big);
+    if (hs) {
+        u64 a = (u64)envGetHeapOverrideAddr(), end = a + hs, from = end - TAIL - (8u << 20);
+        for (u64 q = from; q < end;) {
+            MemoryInfo mi; u32 pi;
+            if (R_FAILED(svcQueryMemory(&mi, &pi, q)) || mi.size == 0) break;
+            if ((mi.attr & MemAttr_IsBorrowed) && mi.addr >= from) { g_tmemAddr = mi.addr; g_tmemSize = mi.size; break; }
+            q = mi.addr + mi.size;
+        }
+    }
+    return rc;
+}
+
+// 1 = al salir, libnx cierra este applet (ExitProcessAndReturn) y vuelve al HOME en vez de regresar al
+// loader. Definicion fuerte que reemplaza a la debil de libnx; se activa solo como plan B (ver salida).
+extern "C" { u32 __nx_applet_exit_mode = 0; }
+
+// Paginas del heap que siguen prestadas o mapeadas por un servicio (attr != 0) o que no son heap normal.
+// Si fp != NULL, las registra. Devuelve cuantas hay (max 64).
+static int heapAnomalies(FILE* fp) {
+    if (!envHasHeapOverride()) return 0;
+    u64 a = (u64)envGetHeapOverrideAddr(), end = a + envGetHeapOverrideSize();
+    int bad = 0;
+    while (a < end && bad < 64) {
+        MemoryInfo mi; u32 pi;
+        if (R_FAILED(svcQueryMemory(&mi, &pi, a)) || mi.size == 0) break;
+        bool parked = g_tmemSize && mi.addr >= g_tmemAddr && mi.addr < g_tmemAddr + g_tmemSize && mi.attr == MemAttr_IsBorrowed;
+        if (!parked && (mi.attr != 0 || (mi.type & 0xFF) != MemType_Heap)) {
+            if (fp) fprintf(fp, "%016llx +%llx type=%x attr=%x perm=%x ipc=%u dev=%u\n", (unsigned long long)mi.addr,
+                            (unsigned long long)mi.size, mi.type, mi.attr, mi.perm, mi.ipc_refcount, mi.device_refcount);
+            bad++;
+        }
+        a = mi.addr + mi.size;
+    }
+    return bad;
+}
+
+// La memoria de transferencia de sockets (bsd) queda prestada al sistema hasta que el servicio procesa el
+// cierre de sesion; libnx la devuelve a malloc sin esperar. Si volvemos al loader con esa pagina aun
+// prestada, el menu (sphaira) se carga sobre ella y cae (2347-0018 o Data Abort). Se espera hasta maxMs.
+static int waitHeapClean(int maxMs) {
+    u64 t0 = armTicksToNs(armGetSystemTick()) / 1000000ULL;
+    for (;;) {
+        if (heapAnomalies(NULL) == 0) return (int)(armTicksToNs(armGetSystemTick()) / 1000000ULL - t0);
+        if ((int)(armTicksToNs(armGetSystemTick()) / 1000000ULL - t0) >= maxMs) return -1;
+        svcSleepThread(2000000ULL);     // 2 ms
+    }
+}
+
+static void logExit(int waitedMs) {
+    FILE* fp = fopen("sdmc:/switch/sh-installer/salida.log", "w");
+    if (!fp) return;
+    fprintf(fp, "heap %p +%llx sockets aparcados en %016llx +%llx\n", envGetHeapOverrideAddr(),
+            (unsigned long long)envGetHeapOverrideSize(), (unsigned long long)g_tmemAddr, (unsigned long long)g_tmemSize);
+    fprintf(fp, waitedMs >= 0 ? "limpio tras %d ms: vuelve al menu\n" : "anomalias ajenas (timeout): plan B, salir al HOME\n", waitedMs);
+    int bad = heapAnomalies(fp);
+    fprintf(fp, "anomalias=%d\n", bad);
+    fclose(fp);
+}
+
 static u64 nowSec() { return armGetSystemTick() / armGetSystemTickFreq(); }
 
 // Muestra el QR y espera a que el teléfono confirme. Devuelve false si el usuario sale (+).
@@ -354,7 +428,7 @@ static void drawMain(const Config& cfg, const std::string& status, const std::st
     std::string host = cfg.server;
     auto p = host.find("://");
     if (p != std::string::npos) host = host.substr(p + 3);
-    printf("\x1b[1;36mSH Installer 2.0.2\x1b[0m  %s\n", ascii(host).c_str());
+    printf("\x1b[1;36mSH Installer 2.0.5\x1b[0m  %s\n", ascii(host).c_str());
     if (status.empty())
         printf("\x1b[1;32m[ CONECTADA ]\x1b[0m esperando envios desde la web (revisa cada %d s)\n", REFRESH_SEC);
     else
@@ -395,7 +469,7 @@ int main() {
     PadState pad;
     padInitializeDefault(&pad);
     g_pad = &pad;
-    socketInitializeDefault();
+    initSocketsAtHeapTail();
     romfsInit();
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
@@ -471,8 +545,11 @@ int main() {
         consoleUpdate(NULL);
     }
     curl_global_cleanup();
+    socketExit();                 // primero: el sistema tarda en devolver la memoria de sockets
     romfsExit();
-    socketExit();
     consoleExit(NULL);
+    int waited = waitHeapClean(500);          // el bloque de sockets aparcado no cuenta
+    logExit(waited);
+    if (waited < 0) __nx_applet_exit_mode = 1;    // plan B: cerrar el applet y volver al HOME
     return 0;
 }

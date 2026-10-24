@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import threading
 from pathlib import Path
 
@@ -23,6 +25,70 @@ class DownloadError(Exception):
 
 def kick() -> None:
     _wake.set()
+
+
+MAX_BYTES = 100 * 1024 * 1024
+AUDIO_EXTS = (".mp3", ".wav", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wma", ".aiff", ".mp4", ".mkv", ".webm", ".mov")
+
+
+def _host_is_public(host: str) -> bool:
+    import ipaddress
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError):
+        return False
+    return bool(infos) and all(ipaddress.ip_address(i[4][0]).is_global for i in infos)
+
+
+def _normalize_url(url: str) -> str:
+    """Enlaces «para ver» de Dropbox y Google Drive -> enlace de descarga directa."""
+    u = urlparse(url)
+    host = (u.hostname or "").lower()
+    if host.endswith("dropbox.com"):
+        q = dict(parse_qsl(u.query))
+        q["dl"] = "1"
+        return urlunparse(u._replace(query=urlencode(q)))
+    m = re.match(r"/file/d/([^/]+)", u.path) if host == "drive.google.com" else None
+    if m:
+        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    return url
+
+
+def direct_download(url: str, dest: Path) -> dict | None:
+    """Enlace directo a un archivo de audio/video: descarga por HTTP. None si la URL no es un archivo."""
+    import mimetypes
+    import urllib.request
+    req = urllib.request.Request(_normalize_url(url), headers={"User-Agent": "Mozilla/5.0 (Switch Hero Autochart)"})
+    size = 0
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            final = r.geturl()
+            if not _host_is_public(urlparse(final).hostname or ""):
+                return None
+            ctype = (r.headers.get_content_type() or "").lower()
+            ext = Path(urlparse(final).path).suffix.lower()
+            if not (ctype.startswith(("audio/", "video/")) or ctype == "application/octet-stream" or ext in AUDIO_EXTS):
+                return None
+            if ext not in AUDIO_EXTS:
+                ext = mimetypes.guess_extension(ctype) or ".bin"
+            out = dest / f"input{ext}"
+            with open(out, "wb") as fh:
+                while chunk := r.read(1 << 16):
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        out.unlink(missing_ok=True)
+                        raise DownloadError("El archivo supera 100 MB")
+                    fh.write(chunk)
+    except DownloadError:
+        raise
+    except Exception:
+        return None
+    if size == 0:
+        return None
+    meta = {"source": str(out)}
+    meta.update({k: v for k, v in tags(out).items() if v})
+    return meta
 
 
 def cookies_path() -> Path:
@@ -45,7 +111,11 @@ def download(url: str, dest: Path) -> dict:
             raise DownloadError("YouTube bloqueó la descarga desde el servidor (exige iniciar sesión). "
                                 "Suba el archivo de audio directamente, o pida al administrador que cargue las "
                                 "cookies de YouTube en Administración.")
-        raise DownloadError(f"Descarga fallida: {msg[:240]}.")
+        direct = direct_download(url, dest)        # cualquier enlace directo a un archivo (o Dropbox/Drive)
+        if direct:
+            return direct
+        raise DownloadError(f"Descarga fallida: {msg[:240]}. Pegue un enlace de YouTube, SoundCloud, Bandcamp, "
+                            "Drive, Dropbox u otro sitio compatible, o un enlace directo a un archivo de audio.")
     audio = [p for p in dest.glob("input.*") if p.suffix not in (".json", ".jpg", ".png", ".webp")]
     if not audio:
         raise DownloadError("La descarga no produjo un archivo de audio")

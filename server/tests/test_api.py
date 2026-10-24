@@ -291,3 +291,34 @@ def test_index_is_versioned_and_retry(client):
     assert client.post(f"/api/jobs/{jid}/retry").status_code == 200
     j = storage.get(jid)
     assert j["status"] == "queued" and j["error"] == ""
+
+
+def test_direct_url_download(tmp_path, monkeypatch):
+    import http.server
+    import subprocess
+    import threading
+    from app import jobs
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body, ctype = (b"ID3" + b"\0" * 300, "audio/mpeg") if self.path.endswith(".mp3") else (b"<html>", "text/html")
+            self.send_response(200); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+        log_message = lambda *a: None
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+
+    class R:
+        returncode = 1
+        stderr = "ERROR: Unsupported URL"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr(jobs, "_host_is_public", lambda h: True)
+    meta = jobs.download(f"{base}/song.mp3", tmp_path / "a")
+    assert meta["source"].endswith("input.mp3") and (tmp_path / "a" / "input.mp3").stat().st_size == 303
+    with pytest.raises(jobs.DownloadError) as e:
+        jobs.download(f"{base}/page", tmp_path / "b")
+    assert "enlace directo" in str(e.value)
+    assert jobs._normalize_url("https://www.dropbox.com/s/abc/x.mp3?dl=0") == "https://www.dropbox.com/s/abc/x.mp3?dl=1"
+    assert jobs._normalize_url("https://drive.google.com/file/d/ID123/view?usp=sharing") == "https://drive.google.com/uc?export=download&id=ID123"
+    srv.shutdown()
