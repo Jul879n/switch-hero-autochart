@@ -277,3 +277,17 @@ def test_youtube_bot_error_is_actionable(tmp_path, monkeypatch):
     with pytest.raises(jobs.DownloadError) as e:
         jobs.download("https://youtu.be/x", tmp_path)
     assert "cookies" in str(e.value) and "audio" in str(e.value)
+
+
+def test_index_is_versioned_and_retry(client):
+    html = client.get("/").text
+    assert "style.css?v=" in html and "app.js?v=" in html
+    assert client.get("/").headers["cache-control"] == "no-cache"
+    from app import storage
+    assert login(client).status_code == 200
+    jid = storage.create("url", "https://youtu.be/x", "", "", 1)
+    assert client.post(f"/api/jobs/{jid}/retry").status_code == 409            # no está en error
+    storage.update(jid, status="error", error="YouTube bloqueó")
+    assert client.post(f"/api/jobs/{jid}/retry").status_code == 200
+    j = storage.get(jid)
+    assert j["status"] == "queued" and j["error"] == ""

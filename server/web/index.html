@@ -135,7 +135,9 @@
       <ul id="users" class="list"></ul>
       <h3>Cookies de YouTube</h3>
       <p class="hint">YouTube suele bloquear descargas desde el servidor. Cargue un <code>cookies.txt</code> (formato Netscape)
-        exportado de un navegador con sesión de YouTube iniciada (ventana privada).</p>
+        exportado de un navegador con sesión de YouTube iniciada. En Safari (Mac):
+        <code>yt-dlp --cookies-from-browser safari --cookies cookies.txt --skip-download https://www.youtube.com</code>
+        (requiere <code>brew install yt-dlp</code> y «Acceso total al disco» para la Terminal). En Chrome o Firefox, la extensión «Get cookies.txt LOCALLY».</p>
       <p><span id="ck-state" class="badge error">Sin cookies</span></p>
       <div class="actions">
         <label class="btn ghost" for="ck-file">Subir cookies.txt</label>

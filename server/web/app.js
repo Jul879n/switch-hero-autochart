@@ -34,8 +34,10 @@ function authForm(which) {
 }
 function showAuth(form = "login-form") { me = null; show("auth"); authForm(form); }
 
+let isAdmin = false;
 async function enter(user) {
   me = user;
+  isAdmin = user.role === "admin";
   $("who").textContent = `${user.email}${user.role === "admin" ? " · administrador" : ""}`;
   if (user.must_change) { show("change"); $("chg-cur").focus(); return; }
   show("app");
@@ -156,6 +158,7 @@ function render(list) {
       li.append(el("progress", { max: 100, value: j.progress, ariaLabel: "Progreso" }));
     }
     if (j.status === "error") li.append(el("span", { className: "msg", textContent: j.error }));
+    const blocked = j.status === "error" && /YouTube bloque/.test(j.error || "");
     if (j.status === "done") {
       const inf = j.info || {};
       li.append(el("span", { textContent: `Instrumentos: ${(inf.instruments || []).join(", ") || "—"}` }));
@@ -190,6 +193,31 @@ function render(list) {
       });
       acts.append(ftp);
     }
+    if (j.status === "error" && j.src_kind === "url") {
+      const rt = el("button", { type: "button", className: "btn", textContent: "Reintentar" });
+      rt.addEventListener("click", async () => { await send("POST", `/api/jobs/${j.id}/retry`).catch((e) => alert(e.message)); lastJobs = ""; refresh(); });
+      acts.append(rt);
+    }
+    if (blocked && isAdmin) {
+      const lb = el("label", { className: "btn ghost", textContent: "Iniciar sesión en YouTube (subir cookies)" });
+      const fi = el("input", { type: "file", accept: ".txt,text/plain", hidden: true });
+      lb.append(fi);
+      fi.addEventListener("change", async () => {
+        const f = fi.files[0];
+        if (!f) return;
+        try {
+          await api("/api/admin/cookies", { method: "PUT", headers: { "Content-Type": "text/plain" }, body: await f.text() });
+          await send("POST", `/api/jobs/${j.id}/retry`);
+          loadCookies(); lastJobs = ""; refresh();
+        } catch (e) { alert(e.message); }
+      });
+      acts.append(lb);
+      const how = el("details", {});
+      how.append(el("summary", { textContent: "¿Cómo obtener el cookies.txt?" }));
+      how.append(el("p", { className: "hint", textContent: "Safari (Mac): 1) Inicie sesión en youtube.com en Safari. 2) Instale yt-dlp (brew install yt-dlp) y dé «Acceso total al disco» a la Terminal (Ajustes del Sistema > Privacidad y seguridad). 3) Ejecute: yt-dlp --cookies-from-browser safari --cookies cookies.txt --skip-download https://www.youtube.com 4) Suba el cookies.txt aquí. Chrome o Firefox: use la extensión «Get cookies.txt LOCALLY» en youtube.com y exporte. Se reintenta la descarga solo." }));
+      li.append(how);
+    }
+    if (blocked && !isAdmin) li.append(el("span", { className: "hint", textContent: "Pida al administrador que inicie sesión en YouTube, o suba el audio directamente." }));
     if (j.status !== "running") {
       const del = el("button", { type: "button", className: "btn danger", textContent: "Eliminar" });
       del.addEventListener("click", async () => {

@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import auth, ftp, jobs, mail, storage
@@ -312,6 +312,16 @@ def delete_job(jid: str, user: dict = Depends(auth.current_user)):
     return {"ok": True}
 
 
+@app.post("/api/jobs/{jid}/retry")
+def retry_job(jid: str, user: dict = Depends(auth.current_user)):
+    j = _job_or_404(jid, user)
+    if j["status"] != "error":
+        raise HTTPException(409, "Solo se reintentan los trabajos con error")
+    storage.update(jid, status="queued", stage="", progress=0, error="")
+    jobs.kick()
+    return {"ok": True}
+
+
 @app.get("/api/jobs/{jid}/zip")
 def job_zip(jid: str, user: dict = Depends(auth.current_user)):
     j = _job_or_404(jid, user)
@@ -493,6 +503,24 @@ def switch_file(jid: str, name: str, user: dict = Depends(auth.installer_or_user
     if j["status"] != "done" or name not in {f["name"] for f in _files(j)}:
         raise HTTPException(404, "Archivo inexistente")
     return FileResponse(_song_dir(j) / name)
+
+
+def _asset_version() -> str:
+    import hashlib
+    h = hashlib.sha1()
+    for n in ("style.css", "app.js", "index.html"):
+        h.update((WEB / n).read_bytes())
+    return h.hexdigest()[:10]
+
+
+@app.get("/")
+@app.get("/index.html")
+def index():
+    """index.html con CSS/JS versionados: Cloudflare cachea los estáticos 4 h y serviría una versión vieja."""
+    v = _asset_version()
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    html = html.replace('href="style.css"', f'href="style.css?v={v}"').replace('src="app.js"', f'src="app.js?v={v}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")
