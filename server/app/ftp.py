@@ -15,7 +15,7 @@ class FtpError(Exception):
 def check_host(host: str, port: int) -> str:
     """Acepta cualquier IP (LAN, Tailscale, pública); excluye las que apuntan al propio servidor o a su metadata."""
     try:
-        ip = ipaddress.ip_address(host.strip())
+        ip = ipaddress.ip_address(host.strip().replace(",", ".").replace(" ", ""))   # teclados móviles ponen «,»
     except ValueError:
         raise FtpError("Ingrese la IP de la Switch (por ejemplo 192.168.1.50)")
     if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast:

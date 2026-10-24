@@ -369,6 +369,39 @@ async def switch_login(request: Request):
     return {"token": token}
 
 
+# Cookies de YouTube (yt-dlp): el servidor está en un datacenter y YouTube le exige iniciar sesión.
+@app.get("/api/admin/cookies")
+def cookies_status(user: dict = Depends(auth.admin_user)):
+    p = jobs.cookies_path()
+    return {"present": p.is_file(), "bytes": p.stat().st_size if p.is_file() else 0,
+            "modified": p.stat().st_mtime if p.is_file() else 0}
+
+
+@app.put("/api/admin/cookies")
+async def cookies_put(request: Request, user: dict = Depends(auth.admin_user)):
+    raw = await request.body()
+    if not raw or len(raw) > 512 * 1024:
+        raise HTTPException(400, "Archivo vacío o demasiado grande (máx. 512 KB)")
+    text = raw.decode("utf-8", "replace").replace("\r\n", "\n")
+    rows = [ln for ln in text.split("\n") if ln.strip() and not ln.startswith("#")]
+    ok = [ln for ln in rows if len(ln.split("\t")) == 7]
+    if not ok or not any("youtube.com" in ln or "google.com" in ln for ln in ok):
+        raise HTTPException(400, "No parece un cookies.txt (formato Netscape) con cookies de youtube.com")
+    p = jobs.cookies_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text("# Netscape HTTP Cookie File\n" + "\n".join(ok) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(p)
+    return {"ok": True, "cookies": len(ok)}
+
+
+@app.delete("/api/admin/cookies")
+def cookies_delete(user: dict = Depends(auth.admin_user)):
+    jobs.cookies_path().unlink(missing_ok=True)
+    return {"ok": True}
+
+
 # Vinculación por QR: la Switch pide un código, el usuario lo confirma desde el teléfono con su sesión.
 PAIR_TTL = 600
 PAIR_MAX = 200

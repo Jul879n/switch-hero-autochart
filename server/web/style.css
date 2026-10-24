@@ -12,7 +12,7 @@ main { max-width:780px; margin:0 auto; padding:16px 16px 64px; display:grid; gap
 .card { background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:16px; display:grid; gap:10px; }
 #app { display:grid; gap:16px; }
 label { font-weight:600; }
-input[type=text], input[type=url], input[type=email], input[type=password] { width:100%; padding:10px 12px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit; }
+input[type=text], input[type=url], input[type=email], input[type=password], input[type=number] { width:100%; padding:10px 12px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit; }
 input::placeholder { color:#7d8593; }
 .pass { display:flex; gap:8px; } .pass input { flex:1; }
 .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }

@@ -40,7 +40,7 @@ async function enter(user) {
   if (user.must_change) { show("change"); $("chg-cur").focus(); return; }
   show("app");
   $("admin").hidden = user.role !== "admin";
-  if (user.role === "admin") loadUsers().catch(() => {});
+  if (user.role === "admin") { loadUsers().catch(() => {}); loadCookies(); }
   lastJobs = ""; refresh();
   clearInterval(timer); timer = setInterval(refresh, 3000);
 }
@@ -212,7 +212,7 @@ function swState() {
 }
 async function swConnect(e) {
   e?.preventDefault();
-  const host = $("sw-host").value.trim(), port = Number($("sw-port").value) || 5000;
+  const host = $("sw-host").value.trim().replace(/[,\s]/g, "."), port = Number($("sw-port").value) || 5000;
   const btn = $("sw-btn");
   btn.disabled = true; btn.textContent = "Conectando…"; $("sw-msg").textContent = "";
   try {
@@ -224,6 +224,31 @@ async function swConnect(e) {
 }
 $("sw-form").addEventListener("submit", swConnect);
 $("sw-host").value = sw.host; $("sw-port").value = sw.port; swState();
+
+/* ---------- cookies de YouTube (admin) ---------- */
+async function loadCookies() {
+  try {
+    const r = await api("/api/admin/cookies");
+    const b = $("ck-state");
+    b.textContent = r.present ? `Cargadas (${new Date(r.modified * 1000).toLocaleDateString()})` : "Sin cookies";
+    b.className = `badge ${r.present ? "done" : "error"}`;
+    $("ck-del").hidden = !r.present;
+  } catch { /* no es admin */ }
+}
+$("ck-file").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (!f) return;
+  try {
+    await api("/api/admin/cookies", { method: "PUT", headers: { "Content-Type": "text/plain" }, body: await f.text() });
+    $("ck-msg").className = "msg ok"; $("ck-msg").textContent = "Cookies cargadas.";
+  } catch (err) { $("ck-msg").className = "msg"; $("ck-msg").textContent = err.message; }
+  loadCookies();
+});
+$("ck-del").addEventListener("click", async () => {
+  if (!confirm("¿Quitar las cookies de YouTube?")) return;
+  await send("DELETE", "/api/admin/cookies").catch((e) => alert(e.message));
+  loadCookies();
+});
 
 /* ---------- Switch (app) y vinculación por QR ---------- */
 async function swAppPoll() {

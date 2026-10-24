@@ -25,20 +25,27 @@ def kick() -> None:
     _wake.set()
 
 
+def cookies_path() -> Path:
+    return Path(os.environ.get("YTDLP_COOKIES", "/data/cookies.txt"))
+
+
 def download(url: str, dest: Path) -> dict:
     """yt-dlp -> dest/input.<ext>; devuelve {title, artist, thumb, source}."""
     dest.mkdir(parents=True, exist_ok=True)
     cmd = ["yt-dlp", "-x", "--audio-format", "best", "--write-info-json", "--write-thumbnail",
            "--convert-thumbnails", "jpg", "--max-filesize", "100M", "--no-playlist",
            "-o", str(dest / "input.%(ext)s")]
-    cookies = Path(os.environ.get("YTDLP_COOKIES", "/data/cookies.txt"))
+    cookies = cookies_path()
     if cookies.is_file():
         cmd += ["--cookies", str(cookies)]
     r = subprocess.run(cmd + ["--", url], capture_output=True, text=True, timeout=1200)
     if r.returncode != 0:
         msg = (r.stderr.strip().splitlines() or ["error desconocido"])[-1]
-        hint = " Suba el archivo de audio directamente." if "Sign in" in msg or "bot" in msg else ""
-        raise DownloadError(f"Descarga fallida: {msg[:240]}.{hint}")
+        if "Sign in" in msg or "bot" in msg:
+            raise DownloadError("YouTube bloqueó la descarga desde el servidor (exige iniciar sesión). "
+                                "Suba el archivo de audio directamente, o pida al administrador que cargue las "
+                                "cookies de YouTube en Administración.")
+        raise DownloadError(f"Descarga fallida: {msg[:240]}.")
     audio = [p for p in dest.glob("input.*") if p.suffix not in (".json", ".jpg", ".png", ".webp")]
     if not audio:
         raise DownloadError("La descarga no produjo un archivo de audio")

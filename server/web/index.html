@@ -106,8 +106,8 @@
       <h2 id="sw-h">Switch (FTP)</h2>
       <form id="sw-form" novalidate>
         <div class="row">
-          <div><label for="sw-host">IP de la Switch</label><input id="sw-host" type="text" inputmode="decimal" placeholder="192.168.1.50" autocomplete="off"></div>
-          <div><label for="sw-port">Puerto</label><input id="sw-port" type="number" min="1" max="65535" value="5000"></div>
+          <div><label for="sw-host">IP de la Switch</label><input id="sw-host" type="text" placeholder="192.168.1.50" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+          <div><label for="sw-port">Puerto</label><input id="sw-port" type="number" min="1" max="65535" value="5000" inputmode="numeric"></div>
         </div>
         <button type="submit" id="sw-btn" class="btn">Conectar</button>
         <span id="sw-state" class="badge" role="status" aria-live="polite">Desconectada</span>
@@ -133,6 +133,16 @@
       </form>
       <p id="adm-msg" class="msg" role="status" aria-live="polite"></p>
       <ul id="users" class="list"></ul>
+      <h3>Cookies de YouTube</h3>
+      <p class="hint">YouTube suele bloquear descargas desde el servidor. Cargue un <code>cookies.txt</code> (formato Netscape)
+        exportado de un navegador con sesión de YouTube iniciada (ventana privada).</p>
+      <p><span id="ck-state" class="badge error">Sin cookies</span></p>
+      <div class="actions">
+        <label class="btn ghost" for="ck-file">Subir cookies.txt</label>
+        <input id="ck-file" type="file" accept=".txt,text/plain" hidden>
+        <button type="button" id="ck-del" class="btn danger" hidden>Quitar</button>
+      </div>
+      <p id="ck-msg" class="msg" role="status" aria-live="polite"></p>
     </section>
   </div>
 </main>

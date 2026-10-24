@@ -165,6 +165,7 @@ def test_ftp_push(client, tmp_path, monkeypatch):
     assert ftp.check_host("192.168.1.5", 5000) == "192.168.1.5"
     assert ftp.check_host("100.101.102.103", 5000) == "100.101.102.103"     # Tailscale
     assert ftp.check_host("8.8.8.8", 5000) == "8.8.8.8"
+    assert ftp.check_host(" 192,168,100,9 ", 5000) == "192.168.100.9"
     # endpoint: job listo, FTP simulado
     jid = storage.create("file", "", "T", "A", 1)
     d = storage.job_dir(jid) / "A - T"
@@ -250,3 +251,29 @@ def test_switch_session_never_expires_but_follows_account(client):
     storage._q("UPDATE users SET active=0 WHERE email=?", ("admin@x.cl",))        # cuenta desactivada
     assert c2.get("/api/switch/songs", headers=h).status_code == 401
     storage._q("UPDATE users SET active=1 WHERE email=?", ("admin@x.cl",))
+
+
+def test_youtube_cookies_admin(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("YTDLP_COOKIES", str(tmp_path / "cookies.txt"))
+    assert client.get("/api/admin/cookies").status_code == 401
+    assert login(client).status_code == 200
+    assert client.get("/api/admin/cookies").json()["present"] is False
+    assert client.put("/api/admin/cookies", content=b"hola").status_code == 400
+    ck = b"# Netscape HTTP Cookie File\r\n.youtube.com\tTRUE\t/\tTRUE\t2000000000\tSID\tabc\r\n"
+    assert client.put("/api/admin/cookies", content=ck).json() == {"ok": True, "cookies": 1}
+    assert client.get("/api/admin/cookies").json()["present"]
+    assert (tmp_path / "cookies.txt").stat().st_mode & 0o777 == 0o600
+    assert client.delete("/api/admin/cookies").status_code == 200
+    assert client.get("/api/admin/cookies").json()["present"] is False
+
+
+def test_youtube_bot_error_is_actionable(tmp_path, monkeypatch):
+    import subprocess
+
+    class R:
+        returncode = 1
+        stderr = "ERROR: [youtube] x: Sign in to confirm you're not a bot."
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+    with pytest.raises(jobs.DownloadError) as e:
+        jobs.download("https://youtu.be/x", tmp_path)
+    assert "cookies" in str(e.value) and "audio" in str(e.value)

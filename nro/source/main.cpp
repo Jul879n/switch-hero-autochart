@@ -38,6 +38,26 @@ struct Song {
     bool pending = false;       // enviada desde la web
 };
 
+// La consola de libnx solo dibuja ASCII: se translitera lo común y el resto pasa a '?'.
+static std::string ascii(const std::string& in) {
+    static const std::map<std::string, char> tr = {
+        {"á", 'a'}, {"é", 'e'}, {"í", 'i'}, {"ó", 'o'}, {"ú", 'u'}, {"ü", 'u'}, {"ñ", 'n'},
+        {"Á", 'A'}, {"É", 'E'}, {"Í", 'I'}, {"Ó", 'O'}, {"Ú", 'U'}, {"Ü", 'U'}, {"Ñ", 'N'},
+        {"à", 'a'}, {"è", 'e'}, {"ê", 'e'}, {"ç", 'c'}, {"ö", 'o'}, {"ä", 'a'}, {"â", 'a'}, {"ô", 'o'}};
+    std::string out;
+    for (size_t i = 0; i < in.size();) {
+        unsigned char c = in[i];
+        if (c >= 0x20 && c < 0x7F) { out += (char)c; i++; continue; }
+        size_t n = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+        auto it = tr.find(in.substr(i, n));
+        out += it != tr.end() ? it->second : '?';
+        i += n;
+    }
+    return out;
+}
+
+static std::string clip(const std::string& s, size_t n) { return s.size() <= n ? s : s.substr(0, n - 3) + "..."; }
+
 static std::string trim(const std::string& s) {
     size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
     return a == std::string::npos ? "" : s.substr(a, b - a + 1);
@@ -170,7 +190,7 @@ static std::string installSong(const Config& c, const Song& s) {
     for (auto& f : s.files) {
         std::string finalPath = dir + "/" + f.name, part = finalPath + ".part";
         if (fileSize(finalPath) == f.bytes) continue;
-        printf("  %s (%lld KB)\n", f.name.c_str(), f.bytes / 1024);
+        printf("  %s (%lld KB)\n", ascii(f.name).c_str(), f.bytes / 1024);
         consoleUpdate(NULL);
         FILE* fp = fopen(part.c_str(), "wb");
         if (!fp) return "No se pudo escribir " + part;
@@ -240,13 +260,13 @@ static u64 nowSec() { return armGetSystemTick() / armGetSystemTickFreq(); }
 static bool pairFlow(Config& cfg, PadState& pad) {
     while (appletMainLoop()) {
         consoleClear();
-        printf("Vincular esta Switch a su cuenta\n\n");
+        printf("\x1b[1mSH Installer - vincular esta Switch\x1b[0m\n\nPidiendo codigo al servidor...\n");
         consoleUpdate(NULL);
         std::string resp;
         long code = postJson(cfg, "/api/switch/pair", "{}", resp);
         if (code != 200) {
-            printf("No se pudo contactar al servidor (%s)%s\n\nA reintentar   + salir\n", cfg.server.c_str(),
-                   code ? (" HTTP " + std::to_string(code)).c_str() : "");
+            printf("\x1b[31mNo se pudo contactar al servidor\x1b[0m\n%s%s\n\nRevise la conexion a internet de la Switch.\n\n  A reintentar    + salir\n", cfg.server.c_str(),
+                   code ? (" (HTTP " + std::to_string(code) + ")").c_str() : "");
             consoleUpdate(NULL);
             while (appletMainLoop()) {
                 padUpdate(&pad);
@@ -265,8 +285,9 @@ static bool pairFlow(Config& cfg, PadState& pad) {
             ttl = j.value("expires_in", 600);
         } catch (...) { continue; }
         consoleClear();
-        printf("Escanee con el teléfono, inicie sesión y pulse «Vincular».   + salir\n");
-        printf("Código: %s   (%s)\n\n", pcode.c_str(), url.c_str());
+        printf("\x1b[1mSH Installer - vincular esta Switch\x1b[0m                         + salir\n");
+        printf("1) Escanee el QR con el telefono   2) Inicie sesion   3) Pulse \"Vincular\"\n");
+        printf("Codigo: \x1b[1;33m%s\x1b[0m   Esperando confirmacion...\n", pcode.c_str());
         printQr(url);
         consoleUpdate(NULL);
         u64 start = nowSec(), last = 0;
@@ -291,6 +312,38 @@ static bool pairFlow(Config& cfg, PadState& pad) {
         }
     }
     return false;
+}
+
+static void drawMain(const Config& cfg, const std::string& status, const std::string& info,
+                     const std::vector<Song>& songs, size_t sel) {
+    const size_t ROWS = 36;                   // alto util de la lista en una consola de 45 filas
+    consoleClear();
+    std::string host = cfg.server;
+    auto p = host.find("://");
+    if (p != std::string::npos) host = host.substr(p + 3);
+    printf("\x1b[1;36mSH Installer 2.0.1\x1b[0m  %s\n", ascii(host).c_str());
+    if (status.empty())
+        printf("\x1b[1;32m[ CONECTADA ]\x1b[0m esperando envios desde la web (revisa cada %d s)\n", REFRESH_SEC);
+    else
+        printf("\x1b[1;31m[ SIN CONEXION ]\x1b[0m %s\n", clip(ascii(status), 62).c_str());
+    printf("%s\n", info.empty() ? " " : clip(ascii(info), 78).c_str());
+    printf("--------------------------------------------------------------------------------\n");
+    if (songs.empty()) {
+        if (status.empty())
+            printf("\nSu cuenta no tiene canciones listas.\nGenere una en la web y pulse \"Enviar a la Switch\".\n");
+    } else {
+        size_t first = sel > ROWS / 2 ? sel - ROWS / 2 : 0;
+        if (first + ROWS > songs.size()) first = songs.size() > ROWS ? songs.size() - ROWS : 0;
+        for (size_t i = first; i < songs.size() && i < first + ROWS; i++) {
+            const Song& s = songs[i];
+            const char* mark = installed(s) ? "\x1b[32m[x]\x1b[0m" : s.pending ? "\x1b[33m[>]\x1b[0m" : "[ ]";
+            std::string name = clip(ascii(s.artist + " - " + s.name), 66);
+            printf("%s %s %s%s%s\n", i == sel ? "\x1b[7m" : "", mark, name.c_str(),
+                   s.pending && !installed(s) ? "  (en cola)" : "", "\x1b[0m");
+        }
+        if (songs.size() > ROWS) printf("\x1b[90m%zu/%zu\x1b[0m\n", sel + 1, songs.size());
+    }
+    printf("\x1b[45;1H\x1b[90mA instalar  Y faltantes  B recargar  X otra cuenta  + salir\x1b[0m");
 }
 
 static void waitA(PadState& pad) {
@@ -321,7 +374,7 @@ int main() {
     size_t sel = 0;
     bool redraw = true, quit = !ok, refresh = ok;
     u64 lastFetch = 0;
-    std::string info = "Conectando…";
+    std::string info;
     while (appletMainLoop() && !quit) {
         padUpdate(&pad);
         u64 down = padGetButtonsDown(&pad);
@@ -354,9 +407,9 @@ int main() {
                 for (auto& s : songs) {
                     if (!s.pending) continue;
                     consoleClear();
-                    printf("Recibiendo %s - %s\n", s.artist.c_str(), s.name.c_str());
+                    printf("\x1b[1;33mRecibiendo desde la web\x1b[0m\n%s - %s\n\n", ascii(s.artist).c_str(), ascii(s.name).c_str());
                     std::string err = installSong(cfg, s);
-                    if (err.empty()) { ackSong(cfg, s); info = "Instalada: " + s.name; }
+                    if (err.empty()) { ackSong(cfg, s); info = "Instalada: " + s.artist + " - " + s.name; }
                     else { info = "ERROR en " + s.name + ": " + err; break; }
                 }
             }
@@ -368,22 +421,16 @@ int main() {
             for (size_t i = 0; i < songs.size(); i++) {
                 if (!all && i != sel) continue;
                 if (all && installed(songs[i])) continue;
-                printf("Instalando %s - %s\n", songs[i].artist.c_str(), songs[i].name.c_str());
+                printf("\x1b[1;33mInstalando\x1b[0m %s - %s\n", ascii(songs[i].artist).c_str(), ascii(songs[i].name).c_str());
                 std::string err = installSong(cfg, songs[i]);
-                if (!err.empty()) { printf("ERROR: %s\n", err.c_str()); break; }
+                if (!err.empty()) { printf("\x1b[31mERROR: %s\x1b[0m\n", ascii(err).c_str()); break; }
             }
-            printf("Listo.\n");
+            printf("\x1b[32mListo.\x1b[0m\n");
             waitA(pad);
             redraw = true;
         }
         if (redraw) {
-            consoleClear();
-            printf("SH Installer  |  A instalar  Y faltantes  B recargar  X otra cuenta  + salir\n");
-            printf("%s\n\n", status.empty() ? ("Conectada · esperando envíos desde la web. " + info).c_str() : status.c_str());
-            if (status.empty() && songs.empty()) printf("Su cuenta no tiene canciones listas.\n");
-            for (size_t i = 0; i < songs.size(); i++)
-                printf("%s %s %s - %s\n", i == sel ? ">" : " ", installed(songs[i]) ? "[x]" : "[ ]",
-                       songs[i].artist.c_str(), songs[i].name.c_str());
+            drawMain(cfg, status, info, songs, sel);
             redraw = false;
         }
         consoleUpdate(NULL);
