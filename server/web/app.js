@@ -25,9 +25,9 @@ const post = (p, body) => send("POST", p, body);
 /* ---------- combobox (MusicBrainz vía /api/suggest) ---------- */
 function combo(input, kind, extra) {
   const list = $(`${input.id}-list`);
-  let items = [], idx = -1, t = null, seq = 0;
+  let items = [], meta = [], idx = -1, t = null, seq = 0;
   const close = () => { list.hidden = true; input.setAttribute("aria-expanded", "false"); idx = -1; input.removeAttribute("aria-activedescendant"); };
-  const pick = (v) => { input.value = v; close(); input.dispatchEvent(new Event("change")); };
+  const pick = (v) => { input.value = v; close(); input.dispatchEvent(new Event("change")); input.dispatchEvent(new Event("pick")); };
   const opts = () => [...list.querySelectorAll("[role=option]")];
   const mark = () => opts().forEach((li, i) => {
     li.setAttribute("aria-selected", String(i === idx));
@@ -40,6 +40,7 @@ function combo(input, kind, extra) {
     rows.forEach((text, i) => {
       const isNew = i === items.length && !items.some((x) => x.toLowerCase() === q.toLowerCase());
       const li = el("li", { id: `${input.id}-o${i}`, role: "option", textContent: text, className: isNew ? "new" : "" });
+      if (!isNew && meta[i]) li.append(el("span", { className: "dur", textContent: meta[i] }));
       li.setAttribute("aria-selected", "false");
       li.addEventListener("mousedown", (e) => { e.preventDefault(); pick(isNew ? q : items[i]); });
       list.append(li);
@@ -50,13 +51,13 @@ function combo(input, kind, extra) {
     clearTimeout(t);
     const q = input.value.trim();
     if (q.length < 2) { close(); return; }
-    items = []; render(q, true);          // la lista aparece al instante; las sugerencias llegan después
+    items = []; meta = []; render(q, true);          // la lista aparece al instante; las sugerencias llegan después
     t = setTimeout(async () => {
       const mine = ++seq;
       const p = new URLSearchParams({ kind, q }); if (extra) p.set("artist", extra());
       const r = await api(`/api/suggest?${p}`).catch(() => ({ items: [] }));
       if (mine !== seq || document.activeElement !== input) return;
-      items = r.items || []; render(q);
+      items = r.items || []; meta = r.meta || []; render(q);
     }, 350);
   });
   input.addEventListener("keydown", (e) => {
@@ -175,6 +176,38 @@ $("file").addEventListener("change", (e) => setFile(e.target.files[0] || null));
 ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", (e) => setFile(e.dataTransfer.files[0] || null));
+
+/* ---------- buscador (YouTube) ---------- */
+const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+$("search-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("search-q").value.trim();
+  if (q.length < 2) return say("search-msg", "Escriba al menos 2 letras.");
+  const ul = $("search-results"); ul.replaceChildren();
+  $("search-btn").disabled = true; say("search-msg", "Buscando…");
+  try {
+    const { items } = await api(`/api/search?${new URLSearchParams({ q })}`);
+    say("search-msg", items.length ? `${items.length} resultados` : "Sin resultados.", !!items.length);
+    for (const it of items) {
+      const li = el("li", { className: "result" });
+      li.append(el("img", { src: it.thumb, alt: "", loading: "lazy" }));
+      const info = el("div", {});
+      info.append(el("h3", { textContent: it.name }), el("div", { className: "meta", textContent: `${it.channel} · ${mmss(it.duration)}` }));
+      const go = el("button", { type: "button", className: "btn", textContent: "Generar carta" });
+      go.setAttribute("aria-label", `Generar carta de ${it.name}`);
+      go.addEventListener("click", async () => {
+        const fd = new FormData();
+        fd.append("url", it.url); fd.append("title", it.title); fd.append("artist", it.artist);
+        go.disabled = true; go.textContent = "Enviando…";
+        try { await api("/api/jobs", { method: "POST", body: fd }); go.textContent = "En cola ✓"; lastJobs = ""; refresh(); }
+        catch (err) { go.disabled = false; go.textContent = "Generar carta"; alert(err.message); }
+      });
+      const acts = el("div", { className: "actions" }); acts.append(go); info.append(acts);
+      li.append(info); ul.append(li);
+    }
+  } catch (err) { say("search-msg", err.message); }
+  finally { $("search-btn").disabled = false; }
+});
 
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -414,3 +447,5 @@ async function saveToFolder(j, btn) {
 
 combo($("artist"), "artist");
 combo($("title"), "title", () => $("artist").value.trim());
+combo($("search-q"), "song");
+$("search-q").addEventListener("pick", () => $("search-form").requestSubmit());

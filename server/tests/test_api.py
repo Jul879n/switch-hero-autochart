@@ -352,3 +352,44 @@ def test_suggest_and_cancel_resume(client, monkeypatch):
     assert jobs._flags[jid] == "resume"
     assert any(x["id"] == jid and "idle" in x for x in client.get("/api/jobs").json())
     jobs._flags.pop(jid, None)
+
+
+def test_song_search(client, monkeypatch):
+    import json as _json
+    import subprocess
+    from app import jobs
+    assert login(client).status_code == 200
+    entries = [{"id": "a1", "title": "ASIAN KUNG-FU GENERATION - Rewrite (Official Video)", "channel": "AKG Official YouTube Channel", "duration": 228},
+               {"id": "b2", "title": "Re:Re:", "channel": "ASIAN KUNG-FU GENERATION - Topic", "duration": 229},
+               {"id": "c3", "title": "Mix de 2 horas", "channel": "X", "duration": 7200},
+               {"id": "d4", "title": "En vivo", "channel": "Y", "duration": None}]
+
+    class R:
+        returncode = 0
+        stdout = _json.dumps({"entries": entries})
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: calls.append(cmd) or R())
+    r = client.get("/api/search", params={"q": "asian kung"})
+    items = r.json()["items"]
+    assert [i["url"] for i in items] == ["https://www.youtube.com/watch?v=a1", "https://www.youtube.com/watch?v=b2"]
+    assert (items[0]["artist"], items[0]["title"]) == ("ASIAN KUNG-FU GENERATION", "Rewrite")
+    assert (items[1]["artist"], items[1]["title"]) == ("ASIAN KUNG-FU GENERATION", "Re:Re:")
+    assert client.get("/api/search", params={"q": "Asian  Kung"}).status_code == 200 and len(calls) == 1   # caché
+    assert client.get("/api/search", params={"q": "a"}).status_code == 400
+    for i in range(12):
+        last = client.get("/api/search", params={"q": f"tema {i}"})
+    assert last.status_code == 429
+    jobs_err = R(); jobs_err.returncode = 1
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: jobs_err)
+    from app import main as m
+    m._search_hits.clear()
+    assert client.get("/api/search", params={"q": "otra cosa"}).status_code == 502
+
+
+def test_song_suggestions(client, monkeypatch):
+    from app import suggest
+    assert login(client).status_code == 200
+    suggest._cache.clear()
+    monkeypatch.setattr(suggest, "_get", lambda url: {"data": [{"title_short": "Re:Re:", "duration": 229, "artist": {"name": "ASIAN KUNG-FU GENERATION"}}]})
+    r = client.get("/api/suggest", params={"kind": "song", "q": "rere"})
+    assert r.json() == {"items": ["ASIAN KUNG-FU GENERATION - Re:Re:"], "meta": ["3:49"]}

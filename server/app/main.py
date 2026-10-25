@@ -35,7 +35,7 @@ async def lifespan(_app):
 
 app = FastAPI(title="Switch Hero Autochart", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
-CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+CSP = ("default-src 'self'; img-src 'self' data: https://i.ytimg.com; style-src 'self'; script-src 'self'; "
        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
 
@@ -350,11 +350,41 @@ def resume_job(jid: str, user: dict = Depends(auth.current_user)):
     return {"ok": True}
 
 
+_search_cache: dict = {}
+_search_hits: dict = {}
+
+
+@app.get("/api/search")
+def search_songs(q: str = "", user: dict = Depends(auth.current_user)):
+    q = " ".join(q.split())[:120]
+    if len(q) < 2:
+        raise HTTPException(400, "Escriba al menos 2 letras")
+    key = q.lower()
+    hit = _search_cache.get(key)
+    if hit and time.time() - hit[0] < 3600:
+        return {"items": hit[1]}
+    now = time.time()
+    recent = [t for t in _search_hits.get(user["id"], []) if now - t < 60]
+    if len(recent) >= 10:                        # no gatillar el bloqueo de YouTube al servidor
+        raise HTTPException(429, "Demasiadas búsquedas; espere un minuto")
+    _search_hits[user["id"]] = recent + [now]
+    try:
+        items = jobs.search(q)
+    except jobs.DownloadError as e:
+        raise HTTPException(502, str(e))
+    if len(_search_cache) > 300:
+        _search_cache.clear()
+    _search_cache[key] = (now, items)
+    return {"items": items}
+
+
 @app.get("/api/suggest")
 def suggest_names(kind: str, q: str = "", artist: str = "", user: dict = Depends(auth.current_user)):
-    if kind not in ("artist", "title"):
+    if kind not in ("artist", "title", "song"):
         raise HTTPException(400, "kind inválido")
-    return {"items": suggest.search(kind, q, artist)}
+    items = suggest.search(kind, q, artist)
+    meta = [f"{d // 60}:{d % 60:02d}" if (d := suggest.durations.get(i)) else "" for i in items] if kind == "song" else []
+    return {"items": items, "meta": meta}
 
 
 @app.get("/api/jobs/{jid}/zip")

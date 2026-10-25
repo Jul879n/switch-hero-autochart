@@ -69,6 +69,16 @@
   </section>
 
   <div id="app" hidden>
+    <section class="card" aria-labelledby="search-h">
+      <h2 id="search-h">Buscar canción</h2>
+      <form id="search-form" class="row3 search" role="search">
+        <label for="search-q" class="sr-only">Canción o artista</label>
+        <div class="combo"><input id="search-q" type="search" placeholder="Canción o artista" autocomplete="off" minlength="2" required role="combobox" aria-expanded="false" aria-controls="search-q-list" aria-autocomplete="list"><ul id="search-q-list" class="combo-list" role="listbox" hidden></ul></div>
+        <button type="submit" id="search-btn" class="btn">Buscar</button>
+      </form>
+      <p id="search-msg" class="msg" role="status" aria-live="polite"></p>
+      <ul id="search-results" class="results" aria-labelledby="search-h"></ul>
+    </section>
     <section class="card" aria-labelledby="new-h">
       <h2 id="new-h">Nueva canción</h2>
       <form id="form" novalidate>

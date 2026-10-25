@@ -110,6 +110,44 @@ def cookies_path() -> Path:
     return Path(os.environ.get("YTDLP_COOKIES", "/data/cookies.txt"))
 
 
+_NOISE = re.compile(r"\s*[\(\[][^\)\]]*(official|video|audio|lyric|letra|mv|clip|visualizer|hd|4k)[^\)\]]*[\)\]]", re.I)
+_CHANNEL_NOISE = re.compile(r"\s*(- topic|official( youtube)? channel|official|vevo)\s*$", re.I)
+
+
+def _guess(title: str, channel: str) -> tuple[str, str]:
+    """(artista, título) a partir de un resultado de YouTube: «Artista - Tema» o el nombre del canal."""
+    clean = _NOISE.sub("", title).strip().replace(" – ", " - ").replace(" — ", " - ")
+    if " - " in clean:
+        a, t = clean.split(" - ", 1)
+        return a.strip(), t.strip()
+    return _CHANNEL_NOISE.sub("", channel or "").strip(), clean
+
+
+def search(q: str, limit: int = 12) -> list[dict]:
+    """Búsqueda en YouTube (solo metadatos, sin descargar). Omite resultados de más de 15 min."""
+    cmd = ["yt-dlp", "--flat-playlist", "-J", "--no-warnings"]
+    cookies = cookies_path()
+    if cookies.is_file():
+        cmd += ["--cookies", str(cookies)]
+    try:
+        r = subprocess.run(cmd + ["--", f"ytsearch{limit + 4}:{q}"], capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        raise DownloadError("La búsqueda tardó demasiado; intente de nuevo")
+    if r.returncode != 0:
+        raise DownloadError("YouTube no respondió a la búsqueda; intente de nuevo")
+    out = []
+    for e in json.loads(r.stdout or "{}").get("entries") or []:
+        dur = e.get("duration") or 0
+        vid = e.get("id")
+        if not vid or not dur or dur > 15 * 60:
+            continue
+        artist, title = _guess(e.get("title") or "", e.get("channel") or e.get("uploader") or "")
+        out.append({"url": f"https://www.youtube.com/watch?v={vid}", "name": e.get("title") or "",
+                    "channel": e.get("channel") or e.get("uploader") or "", "duration": int(dur),
+                    "thumb": f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", "artist": artist, "title": title})
+    return out[:limit]
+
+
 def download(url: str, dest: Path) -> dict:
     """yt-dlp -> dest/input.<ext>; devuelve {title, artist, thumb, source}."""
     dest.mkdir(parents=True, exist_ok=True)

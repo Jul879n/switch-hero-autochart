@@ -15,6 +15,7 @@ UA = "SwitchHeroAutochart/1.0 (https://switchhero.jarayacontreras.cl)"    # Musi
 MIN_GAP = 1.1          # su límite es 1 consulta por segundo
 TTL = 6 * 3600
 _cache: dict = {}
+durations: dict[str, int] = {}     # «Artista - Tema» -> segundos (para mostrar la duración en la sugerencia)
 _lock = threading.Lock()
 _last = 0.0
 
@@ -56,6 +57,14 @@ def _deezer(kind: str, q: str, artist: str) -> list[str]:
         return [a.get("name", "") for a in data.get("data", [])]
     data = _get(f"{DEEZER}/track?" + urllib.parse.urlencode({"q": f"{artist} {q}".strip(), "limit": 25}))
     rows = data.get("data", [])
+    if kind == "song":
+        out = []
+        for t in rows:
+            name = f'{(t.get("artist") or {}).get("name", "")} - {t.get("title_short") or t.get("title", "")}'
+            if t.get("duration") and len(durations) < 5000:
+                durations.setdefault(name, int(t["duration"]))
+            out.append(name)
+        return out
     same = [t for t in rows if artist and (t.get("artist") or {}).get("name", "").lower() == artist.lower()]
     return [t.get("title_short") or t.get("title", "") for t in (same or rows)]
 
@@ -64,6 +73,9 @@ def _musicbrainz(kind: str, q: str, artist: str) -> list[str]:
     if kind == "artist":
         data = _fetch(f"{BASE}/artist?" + urllib.parse.urlencode({"query": _prefix("artist", q), "fmt": "json", "limit": 8}))
         return [a.get("name", "") for a in data.get("artists", [])]
+    if kind == "song":
+        data = _fetch(f"{BASE}/recording?" + urllib.parse.urlencode({"query": _prefix("recording", q), "fmt": "json", "limit": 12}))
+        return [f'{((r.get("artist-credit") or [{}])[0]).get("name", "")} - {r.get("title", "")}' for r in data.get("recordings", [])]
     lq = _prefix("recording", q) + (f' AND artist:"{_lucene(artist)}"' if artist else "")
     data = _fetch(f"{BASE}/recording?" + urllib.parse.urlencode({"query": lq, "fmt": "json", "limit": 12}))
     return [r.get("title", "") for r in data.get("recordings", [])]
