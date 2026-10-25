@@ -296,14 +296,33 @@ static void printQr(const std::string& text) {
 static const size_t TAIL = 8u << 20;
 static u64 g_tmemAddr = 0, g_tmemSize = 0;      // bloque de sockets aparcado (se excluye del chequeo de salida)
 
+static void* g_plugs[64];
+static char  g_parkLog[160] = "";
+
 static Result initSocketsAtHeapTail() {
-    void* big = nullptr;
     u64 hs = envHasHeapOverride() ? envGetHeapOverrideSize() : 0;
-    if (hs > TAIL * 4) big = malloc(hs - TAIL - (4u << 20));
+    void* big = nullptr;
+    int np = 0;
+    if (hs > TAIL * 4) {
+        big = malloc(hs - TAIL - (4u << 20));
+        // malloc reutiliza primero los huecos libres de abajo: se rellenan con tapones del tamano del bloque de sockets
+        // hasta que una reserva cae por encima de `big` (ya no quedan huecos); esa ultima se libera para que la tome libnx.
+        if (big) {
+            u64 top = (u64)big + (hs - TAIL - (4u << 20));
+            while (np < 64) {
+                void* q = malloc(0x240000);
+                if (!q) break;
+                if ((u64)q >= top) { free(q); break; }
+                g_plugs[np++] = q;
+            }
+        }
+        snprintf(g_parkLog, sizeof g_parkLog, "big=%p tapones=%d", big, np);
+    }
     Result rc = socketInitializeDefault();
+    for (int i = 0; i < np; i++) free(g_plugs[i]);
     free(big);
     if (hs) {
-        u64 a = (u64)envGetHeapOverrideAddr(), end = a + hs, from = end - TAIL - (8u << 20);
+        u64 a = (u64)envGetHeapOverrideAddr(), end = a + hs, from = end - TAIL - (16u << 20);
         for (u64 q = from; q < end;) {
             MemoryInfo mi; u32 pi;
             if (R_FAILED(svcQueryMemory(&mi, &pi, q)) || mi.size == 0) break;
@@ -355,6 +374,7 @@ static void logExit(int waitedMs) {
     if (!fp) return;
     fprintf(fp, "heap %p +%llx sockets aparcados en %016llx +%llx\n", envGetHeapOverrideAddr(),
             (unsigned long long)envGetHeapOverrideSize(), (unsigned long long)g_tmemAddr, (unsigned long long)g_tmemSize);
+    fprintf(fp, "%s\n", g_parkLog);
     fprintf(fp, waitedMs >= 0 ? "limpio tras %d ms: vuelve al menu\n" : "anomalias ajenas (timeout): plan B, salir al HOME\n", waitedMs);
     int bad = heapAnomalies(fp);
     fprintf(fp, "anomalias=%d\n", bad);
@@ -428,7 +448,7 @@ static void drawMain(const Config& cfg, const std::string& status, const std::st
     std::string host = cfg.server;
     auto p = host.find("://");
     if (p != std::string::npos) host = host.substr(p + 3);
-    printf("\x1b[1;36mSH Installer 2.0.5\x1b[0m  %s\n", ascii(host).c_str());
+    printf("\x1b[1;36mSH Installer 2.0.6\x1b[0m  %s\n", ascii(host).c_str());
     if (status.empty())
         printf("\x1b[1;32m[ CONECTADA ]\x1b[0m esperando envios desde la web (revisa cada %d s)\n", REFRESH_SEC);
     else

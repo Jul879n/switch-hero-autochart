@@ -46,3 +46,4 @@ progress { width:100%; height:10px; accent-color:var(--accent); }
 .combo-list li { padding:8px 10px; border-radius:4px; cursor:pointer; }
 .combo-list li[aria-selected=true], .combo-list li:hover { background:var(--line); }
 .combo-list li.new { font-style:italic; }
+.combo-list li.status { color:#7d8593; cursor:default; background:none; }

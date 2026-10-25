@@ -328,6 +328,7 @@ def test_suggest_and_cancel_resume(client, monkeypatch):
     from app import auth, jobs, storage, suggest
     assert login(client).status_code == 200
     uid = auth.user_by_email("admin@x.cl")["id"]
+    monkeypatch.setattr(suggest, "_deezer", lambda *a: [])     # Deezer sin resultados: respaldo MusicBrainz
     monkeypatch.setattr(suggest, "_fetch", lambda url: {"artists": [{"name": "Radiohead"}, {"name": "Radiohead"}, {"name": "Radio Dept."}],
                                                        "recordings": [{"title": "Creep"}]})
     suggest._cache.clear()

@@ -28,12 +28,14 @@ function combo(input, kind, extra) {
   let items = [], idx = -1, t = null, seq = 0;
   const close = () => { list.hidden = true; input.setAttribute("aria-expanded", "false"); idx = -1; input.removeAttribute("aria-activedescendant"); };
   const pick = (v) => { input.value = v; close(); input.dispatchEvent(new Event("change")); };
-  const mark = () => [...list.children].forEach((li, i) => {
+  const opts = () => [...list.querySelectorAll("[role=option]")];
+  const mark = () => opts().forEach((li, i) => {
     li.setAttribute("aria-selected", String(i === idx));
     if (i === idx) input.setAttribute("aria-activedescendant", li.id);
   });
-  function render(q) {
+  function render(q, loading) {
     list.replaceChildren();
+    if (loading) list.append(el("li", { className: "status", textContent: "Buscando…", ariaDisabled: "true" }));
     const rows = [...items, ...(items.some((x) => x.toLowerCase() === q.toLowerCase()) ? [] : [`Usar «${q}»`])];
     rows.forEach((text, i) => {
       const isNew = i === items.length && !items.some((x) => x.toLowerCase() === q.toLowerCase());
@@ -48,6 +50,7 @@ function combo(input, kind, extra) {
     clearTimeout(t);
     const q = input.value.trim();
     if (q.length < 2) { close(); return; }
+    items = []; render(q, true);          // la lista aparece al instante; las sugerencias llegan después
     t = setTimeout(async () => {
       const mine = ++seq;
       const p = new URLSearchParams({ kind, q }); if (extra) p.set("artist", extra());
@@ -57,11 +60,11 @@ function combo(input, kind, extra) {
     }, 350);
   });
   input.addEventListener("keydown", (e) => {
-    const n = list.children.length;
+    const n = opts().length;
     if (list.hidden || !n) return;
     if (e.key === "ArrowDown") { e.preventDefault(); idx = (idx + 1) % n; mark(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); idx = (idx - 1 + n) % n; mark(); }
-    else if (e.key === "Enter" && idx >= 0) { e.preventDefault(); list.children[idx].dispatchEvent(new MouseEvent("mousedown")); }
+    else if (e.key === "Enter" && idx >= 0) { e.preventDefault(); opts()[idx].dispatchEvent(new MouseEvent("mousedown")); }
     else if (e.key === "Escape") close();
   });
   input.addEventListener("blur", close);
