@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
     && apt-get purge -y build-essential cmake pkg-config curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 RUN python -c "from demucs.pretrained import get_model; get_model('htdemucs_6s')"
 ENV HF_HOME=/opt/hf TORCH_HOME=/opt/torch DATA_DIR=/data
+# Límite de CPU: hilos de cálculo y prioridad del worker (se pueden sobrescribir desde el stack)
+ENV OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 WORKER_NICE=10
 RUN mkdir -p /opt/hf /data /opt/torch && cp -r /root/.cache/huggingface/. /opt/hf/ \
     && useradd -r -u 10001 -m app && chown -R app:app /data /opt/hf /opt/torch
 WORKDIR /srv/server

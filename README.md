@@ -26,3 +26,7 @@ inicie sesión en la web y pulse «Vincular». La sesión queda en `sdmc:/switch
 (`server=` es opcional; por defecto `https://switchhero.jarayacontreras.cl`). Desde la web (también desde el teléfono),
 «Enviar a la Switch» pone la canción en cola y la app la instala sola mientras esté abierta (consulta cada 10 s).
 `INSTALLER_TOKEN` sigue valiendo como `token=` fijo (ve todas las canciones).
+
+## Límite de CPU
+
+La imagen fija `OMP_NUM_THREADS`, `MKL_NUM_THREADS` y `OPENBLAS_NUM_THREADS` en 2 y el worker corre con prioridad baja (`WORKER_NICE=10`). Se pueden sobrescribir como variables del stack. Para un tope duro en el VPS, defina `cpus: 2` (o el valor que corresponda) en el servicio del stack de Komodo.

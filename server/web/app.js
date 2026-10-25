@@ -22,6 +22,51 @@ async function api(path, opts = {}) {
 const send = (method, p, body) => api(p, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
 const post = (p, body) => send("POST", p, body);
 
+/* ---------- combobox (MusicBrainz vía /api/suggest) ---------- */
+function combo(input, kind, extra) {
+  const list = $(`${input.id}-list`);
+  let items = [], idx = -1, t = null, seq = 0;
+  const close = () => { list.hidden = true; input.setAttribute("aria-expanded", "false"); idx = -1; input.removeAttribute("aria-activedescendant"); };
+  const pick = (v) => { input.value = v; close(); input.dispatchEvent(new Event("change")); };
+  const mark = () => [...list.children].forEach((li, i) => {
+    li.setAttribute("aria-selected", String(i === idx));
+    if (i === idx) input.setAttribute("aria-activedescendant", li.id);
+  });
+  function render(q) {
+    list.replaceChildren();
+    const rows = [...items, ...(items.some((x) => x.toLowerCase() === q.toLowerCase()) ? [] : [`Usar «${q}»`])];
+    rows.forEach((text, i) => {
+      const isNew = i === items.length && !items.some((x) => x.toLowerCase() === q.toLowerCase());
+      const li = el("li", { id: `${input.id}-o${i}`, role: "option", textContent: text, className: isNew ? "new" : "" });
+      li.setAttribute("aria-selected", "false");
+      li.addEventListener("mousedown", (e) => { e.preventDefault(); pick(isNew ? q : items[i]); });
+      list.append(li);
+    });
+    list.hidden = !rows.length; input.setAttribute("aria-expanded", String(!list.hidden)); idx = -1;
+  }
+  input.addEventListener("input", () => {
+    clearTimeout(t);
+    const q = input.value.trim();
+    if (q.length < 2) { close(); return; }
+    t = setTimeout(async () => {
+      const mine = ++seq;
+      const p = new URLSearchParams({ kind, q }); if (extra) p.set("artist", extra());
+      const r = await api(`/api/suggest?${p}`).catch(() => ({ items: [] }));
+      if (mine !== seq || document.activeElement !== input) return;
+      items = r.items || []; render(q);
+    }, 350);
+  });
+  input.addEventListener("keydown", (e) => {
+    const n = list.children.length;
+    if (list.hidden || !n) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); idx = (idx + 1) % n; mark(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); idx = (idx - 1 + n) % n; mark(); }
+    else if (e.key === "Enter" && idx >= 0) { e.preventDefault(); list.children[idx].dispatchEvent(new MouseEvent("mousedown")); }
+    else if (e.key === "Escape") close();
+  });
+  input.addEventListener("blur", close);
+}
+
 /* ---------- vistas ---------- */
 function show(view) {
   for (const id of ["auth", "change", "app", "bar"]) $(id).hidden = id !== view && !(id === "bar" && view !== "auth");
@@ -218,6 +263,26 @@ function render(list) {
       li.append(how);
     }
     if (blocked && !isAdmin) li.append(el("span", { className: "hint", textContent: "Pida al administrador que inicie sesión en YouTube, o suba el audio directamente." }));
+    if (j.status === "running" && (j.idle || 0) > 90) {
+      li.append(el("span", { className: "msg", textContent: `Parece detenido: sin avance hace ${Math.round(j.idle / 60 * 10) / 10} min.` }));
+      const go = el("button", { type: "button", className: "btn", textContent: "Continuar" });
+      go.title = "Reinicia el paso actual reutilizando lo ya generado";
+      go.addEventListener("click", async () => { go.disabled = true; await send("POST", `/api/jobs/${j.id}/resume`).catch((e) => alert(e.message)); lastJobs = ""; refresh(); });
+      acts.append(go);
+    }
+    if (j.status === "queued" || j.status === "running") {
+      const cn = el("button", { type: "button", className: "btn danger", textContent: "Cancelar" });
+      cn.addEventListener("click", async () => {
+        if (!confirm("¿Cancelar la creación de esta canción?")) return;
+        cn.disabled = true; await send("POST", `/api/jobs/${j.id}/cancel`).catch((e) => alert(e.message)); lastJobs = ""; refresh();
+      });
+      acts.append(cn);
+    }
+    if (j.status === "error" && j.error === "Cancelado por el usuario") {
+      const go = el("button", { type: "button", className: "btn", textContent: "Continuar" });
+      go.addEventListener("click", async () => { go.disabled = true; await send("POST", `/api/jobs/${j.id}/resume`).catch((e) => alert(e.message)); lastJobs = ""; refresh(); });
+      acts.append(go);
+    }
     if (j.status !== "running") {
       const del = el("button", { type: "button", className: "btn danger", textContent: "Eliminar" });
       del.addEventListener("click", async () => {
@@ -343,3 +408,6 @@ async function saveToFolder(j, btn) {
   }
   try { enter(await api("/api/auth/me")); } catch { showAuth(); }
 })();
+
+combo($("artist"), "artist");
+combo($("title"), "title", () => $("artist").value.trim());

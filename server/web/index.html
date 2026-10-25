@@ -81,8 +81,8 @@
         <span class="hint">YouTube, SoundCloud, Bandcamp, Drive, Dropbox u otros sitios, o un enlace directo a un archivo de audio o video</span>
         <input id="url" type="url" placeholder="https://…" autocomplete="off">
         <div class="row">
-          <div><label for="title">Título (opcional)</label><input id="title" type="text" maxlength="200"></div>
-          <div><label for="artist">Artista (opcional)</label><input id="artist" type="text" maxlength="200"></div>
+          <div class="combo"><label for="title">Título (opcional)</label><input id="title" type="text" maxlength="200" role="combobox" aria-expanded="false" aria-controls="title-list" aria-autocomplete="list" autocomplete="off"><ul id="title-list" class="combo-list" role="listbox" hidden></ul></div>
+          <div class="combo"><label for="artist">Artista (opcional)</label><input id="artist" type="text" maxlength="200" role="combobox" aria-expanded="false" aria-controls="artist-list" aria-autocomplete="list" autocomplete="off"><ul id="artist-list" class="combo-list" role="listbox" hidden></ul></div>
         </div>
         <button type="submit" id="submit" class="btn">Generar carta</button>
         <p id="msg" class="msg" role="status" aria-live="polite"></p>

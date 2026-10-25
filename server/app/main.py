@@ -19,7 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, ftp, jobs, mail, storage
+from . import auth, ftp, jobs, mail, storage, suggest
 
 MAX_BYTES = 100 * 1024 * 1024
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -74,6 +74,8 @@ def _public_url_ok(url: str) -> bool:
 def _public(j: dict) -> dict:
     out = {k: j[k] for k in ("id", "status", "stage", "progress", "title", "artist", "src_kind",
                               "error", "created_at", "folder", "sent")}
+    if j["status"] == "running" and j.get("updated"):
+        out["idle"] = int(max(0, time.time() - j["updated"]))      # segundos sin avanzar
     if j["status"] == "done":
         out["info"] = _song_info(j)
     return out
@@ -320,6 +322,39 @@ def retry_job(jid: str, user: dict = Depends(auth.current_user)):
     storage.update(jid, status="queued", stage="", progress=0, error="")
     jobs.kick()
     return {"ok": True}
+
+
+@app.post("/api/jobs/{jid}/cancel")
+def cancel_job(jid: str, user: dict = Depends(auth.current_user)):
+    j = _job_or_404(jid, user)
+    if j["status"] == "queued":
+        storage.update(jid, status="error", error=jobs.CANCELLED)
+    elif j["status"] == "running":
+        jobs.request(jid, "cancel")
+    else:
+        raise HTTPException(409, "Solo se cancelan trabajos en cola o en curso")
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{jid}/resume")
+def resume_job(jid: str, user: dict = Depends(auth.current_user)):
+    """Continuar: reencola un trabajo con error o cancelado, o reinicia el paso de uno detenido (reusa los stems)."""
+    j = _job_or_404(jid, user)
+    if j["status"] == "error":
+        storage.update(jid, status="queued", stage="", progress=0, error="")
+        jobs.kick()
+    elif j["status"] == "running":
+        jobs.request(jid, "resume")
+    else:
+        raise HTTPException(409, "El trabajo no está detenido")
+    return {"ok": True}
+
+
+@app.get("/api/suggest")
+def suggest_names(kind: str, q: str = "", artist: str = "", user: dict = Depends(auth.current_user)):
+    if kind not in ("artist", "title"):
+        raise HTTPException(400, "kind inválido")
+    return {"items": suggest.search(kind, q, artist)}
 
 
 @app.get("/api/jobs/{jid}/zip")

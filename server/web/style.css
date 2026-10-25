@@ -40,3 +40,9 @@ progress { width:100%; height:10px; accent-color:var(--accent); }
 .user { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
 .empty { color:var(--muted); }
 @media (prefers-reduced-motion: no-preference) { .btn, .drop { transition:background .15s, border-color .15s; } }
+
+.combo { position:relative; }
+.combo-list { position:absolute; z-index:20; left:0; right:0; margin:4px 0 0; padding:4px; list-style:none; background:var(--bg); border:1px solid var(--line); border-radius:6px; max-height:260px; overflow:auto; }
+.combo-list li { padding:8px 10px; border-radius:4px; cursor:pointer; }
+.combo-list li[aria-selected=true], .combo-list li:hover { background:var(--line); }
+.combo-list li.new { font-style:italic; }

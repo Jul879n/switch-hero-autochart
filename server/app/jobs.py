@@ -23,6 +23,21 @@ class DownloadError(Exception):
     pass
 
 
+class Cancelled(Exception):
+    pass
+
+
+CANCELLED = "Cancelado por el usuario"
+_flags: dict[str, str] = {}      # id -> "cancel" | "resume", pedido sobre un trabajo en curso
+
+
+def request(jid: str, action: str) -> None:
+    """Pide cancelar o continuar (reiniciar el paso) un trabajo en curso; mata el demucs si está corriendo."""
+    from autochart import separate
+    _flags[jid] = action
+    separate.kill_active()
+
+
 def kick() -> None:
     _wake.set()
 
@@ -194,6 +209,8 @@ def process(job: dict) -> None:
     jdir.mkdir(parents=True, exist_ok=True)
 
     def progress(stage: str, pct: int) -> None:
+        if jid in _flags:
+            raise Cancelled()
         storage.update(jid, stage=stage, progress=int(pct))
 
     storage.update(jid, status="running", stage="descarga", progress=1, error="")
@@ -220,6 +237,10 @@ def process(job: dict) -> None:
 
 
 def _loop() -> None:
+    try:
+        os.nice(int(os.environ.get("WORKER_NICE", "10")))     # el trabajo pesado cede CPU a la web y a otras apps
+    except (OSError, ValueError):
+        pass
     storage.requeue_running()
     while True:
         job = storage.next_queued()
@@ -227,9 +248,18 @@ def _loop() -> None:
             _wake.wait(5)
             _wake.clear()
             continue
+        _flags.pop(job["id"], None)
         try:
             process(job)
+            _flags.pop(job["id"], None)
         except Exception as e:      # el worker nunca debe morir
+            act = _flags.pop(job["id"], None)
+            if act == "resume":
+                storage.update(job["id"], status="queued", stage="", progress=0, error="")
+                continue
+            if act == "cancel":
+                storage.update(job["id"], status="error", stage="", progress=0, error=CANCELLED)
+                continue
             log.exception("job %s falló", job["id"])
             storage.update(job["id"], status="error", error=str(e)[:500])
             _notify(job, "No se pudo generar su canción", f"Error: {str(e)[:500]}\n")

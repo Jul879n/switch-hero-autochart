@@ -322,3 +322,32 @@ def test_direct_url_download(tmp_path, monkeypatch):
     assert jobs._normalize_url("https://www.dropbox.com/s/abc/x.mp3?dl=0") == "https://www.dropbox.com/s/abc/x.mp3?dl=1"
     assert jobs._normalize_url("https://drive.google.com/file/d/ID123/view?usp=sharing") == "https://drive.google.com/uc?export=download&id=ID123"
     srv.shutdown()
+
+
+def test_suggest_and_cancel_resume(client, monkeypatch):
+    from app import auth, jobs, storage, suggest
+    assert login(client).status_code == 200
+    uid = auth.user_by_email("admin@x.cl")["id"]
+    monkeypatch.setattr(suggest, "_fetch", lambda url: {"artists": [{"name": "Radiohead"}, {"name": "Radiohead"}, {"name": "Radio Dept."}],
+                                                       "recordings": [{"title": "Creep"}]})
+    suggest._cache.clear()
+    r = client.get("/api/suggest", params={"kind": "artist", "q": "radio"})
+    assert r.json()["items"] == ["Radiohead", "Radio Dept."]
+    assert client.get("/api/suggest", params={"kind": "title", "q": "cr", "artist": "Radiohead"}).json()["items"] == ["Creep"]
+    assert client.get("/api/suggest", params={"kind": "artist", "q": "r"}).json()["items"] == []
+    assert client.get("/api/suggest", params={"kind": "otro", "q": "radio"}).status_code == 400
+
+    jid = storage.create("url", "https://example.com/x", "t", "a", user_id=uid)
+    assert client.post(f"/api/jobs/{jid}/cancel").status_code == 200
+    j = storage.get(jid)
+    assert (j["status"], j["error"]) == ("error", jobs.CANCELLED)
+    assert client.post(f"/api/jobs/{jid}/cancel").status_code == 409
+    assert client.post(f"/api/jobs/{jid}/resume").status_code == 200
+    assert storage.get(jid)["status"] == "queued"
+
+    storage.update(jid, status="running", progress=20)
+    jobs._flags.pop(jid, None)
+    assert client.post(f"/api/jobs/{jid}/resume").status_code == 200
+    assert jobs._flags[jid] == "resume"
+    assert any(x["id"] == jid and "idle" in x for x in client.get("/api/jobs").json())
+    jobs._flags.pop(jid, None)
