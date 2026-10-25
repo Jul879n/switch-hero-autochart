@@ -355,21 +355,23 @@ _search_hits: dict = {}
 
 
 @app.get("/api/search")
-def search_songs(q: str = "", user: dict = Depends(auth.current_user)):
+def search_songs(q: str = "", source: str = "soundcloud", user: dict = Depends(auth.current_user)):
     q = " ".join(q.split())[:120]
     if len(q) < 2:
         raise HTTPException(400, "Escriba al menos 2 letras")
-    key = q.lower()
+    if source not in jobs.SOURCES:
+        raise HTTPException(400, "Fuente no válida")
+    key = f"{source}:{q.lower()}"
     hit = _search_cache.get(key)
     if hit and time.time() - hit[0] < 3600:
         return {"items": hit[1]}
     now = time.time()
     recent = [t for t in _search_hits.get(user["id"], []) if now - t < 60]
-    if len(recent) >= 10:                        # no gatillar el bloqueo de YouTube al servidor
+    if len(recent) >= 10:                        # no gatillar bloqueos al servidor
         raise HTTPException(429, "Demasiadas búsquedas; espere un minuto")
     _search_hits[user["id"]] = recent + [now]
     try:
-        items = jobs.search(q)
+        items = jobs.search(q, source=source)
     except jobs.DownloadError as e:
         raise HTTPException(502, str(e))
     if len(_search_cache) > 300:

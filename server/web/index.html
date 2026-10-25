@@ -74,6 +74,8 @@
       <form id="search-form" class="row3 search" role="search">
         <label for="search-q" class="sr-only">Canción o artista</label>
         <div class="combo"><input id="search-q" type="search" placeholder="Canción o artista" autocomplete="off" minlength="2" required role="combobox" aria-expanded="false" aria-controls="search-q-list" aria-autocomplete="list"><ul id="search-q-list" class="combo-list" role="listbox" hidden></ul></div>
+        <label for="search-src" class="sr-only">Fuente</label>
+        <select id="search-src" aria-label="Fuente de búsqueda"><option value="soundcloud">SoundCloud</option><option value="youtube">YouTube</option></select>
         <button type="submit" id="search-btn" class="btn">Buscar</button>
       </form>
       <p id="search-msg" class="msg" role="status" aria-live="polite"></p>

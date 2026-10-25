@@ -14,7 +14,7 @@ Genera cartas jugables para [Switch Hero](https://github.com/R-drg/switch-hero) 
 | `PUBLIC_URL` | URL pública, para los enlaces de invitación |
 | `INSTALLER_TOKEN` | Token Bearer que usa el `.nro` en `/api/switch/*` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Envío de correo (invitaciones y avisos) |
-| `YTDLP_COOKIES` | Cookies de yt-dlp (por defecto `/data/cookies.txt`) |
+| `YTDLP_COOKIES` | Cookies de yt-dlp para YouTube (por defecto `/data/cookies.txt`). El buscador usa SoundCloud por defecto (`scsearch`, sin cookies); YouTube es opcional |
 
 ## Pruebas
 `cd server && pytest` (las de tempo con audio requieren librosa).

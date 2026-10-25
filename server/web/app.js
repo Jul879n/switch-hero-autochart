@@ -177,7 +177,7 @@ $("file").addEventListener("change", (e) => setFile(e.target.files[0] || null));
 ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", (e) => setFile(e.dataTransfer.files[0] || null));
 
-/* ---------- buscador (YouTube) ---------- */
+/* ---------- buscador (SoundCloud / YouTube) ---------- */
 const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 $("search-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -186,7 +186,8 @@ $("search-form").addEventListener("submit", async (e) => {
   const ul = $("search-results"); ul.replaceChildren();
   $("search-btn").disabled = true; say("search-msg", "Buscando…");
   try {
-    const { items } = await api(`/api/search?${new URLSearchParams({ q })}`);
+    const source = $("search-src").value;
+    const { items } = await api(`/api/search?${new URLSearchParams({ q, source })}`);
     say("search-msg", items.length ? `${items.length} resultados` : "Sin resultados.", !!items.length);
     for (const it of items) {
       const li = el("li", { className: "result" });

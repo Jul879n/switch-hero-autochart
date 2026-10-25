@@ -369,13 +369,28 @@ def test_song_search(client, monkeypatch):
         stdout = _json.dumps({"entries": entries})
     calls = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, **k: calls.append(cmd) or R())
-    r = client.get("/api/search", params={"q": "asian kung"})
+    r = client.get("/api/search", params={"q": "asian kung", "source": "youtube"})
     items = r.json()["items"]
+    assert calls[-1][-1].startswith("ytsearch")
     assert [i["url"] for i in items] == ["https://www.youtube.com/watch?v=a1", "https://www.youtube.com/watch?v=b2"]
     assert (items[0]["artist"], items[0]["title"]) == ("ASIAN KUNG-FU GENERATION", "Rewrite")
     assert (items[1]["artist"], items[1]["title"]) == ("ASIAN KUNG-FU GENERATION", "Re:Re:")
-    assert client.get("/api/search", params={"q": "Asian  Kung"}).status_code == 200 and len(calls) == 1   # caché
+    assert client.get("/api/search", params={"q": "Asian  Kung", "source": "youtube"}).status_code == 200 and len(calls) == 1   # caché
     assert client.get("/api/search", params={"q": "a"}).status_code == 400
+    assert client.get("/api/search", params={"q": "asian", "source": "spotify"}).status_code == 400
+    # SoundCloud (por defecto): forma real de scsearch (webpage_url, uploader, miniaturas); omite la vista previa de 30 s
+    sc = [{"id": "254112221", "title": "Around the World", "uploader": "Daft Punk", "duration": 30.0,
+           "url": "https://api.soundcloud.com/tracks/soundcloud%3Atracks%3A254112221",
+           "webpage_url": "https://soundcloud.com/daftpunkofficialmusic/around-the-world", "thumbnails": [{"url": "https://i1.sndcdn.com/a.jpg"}]},
+          {"id": "171951429", "title": "Daft Punk - Around The World", "uploader": "G,R,F", "duration": 238.1,
+           "url": "https://api.soundcloud.com/tracks/x", "webpage_url": "https://soundcloud.com/g-r-f/daft-punk-around-the-world",
+           "thumbnails": [{"url": "https://i1.sndcdn.com/s.jpg"}, {"url": "https://i1.sndcdn.com/b.jpg"}]}]
+    Rs = R(); Rs.stdout = _json.dumps({"entries": sc})
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: calls.append(cmd) or Rs)
+    items = client.get("/api/search", params={"q": "daft punk"}).json()["items"]
+    assert calls[-1][-1].startswith("scsearch") and "--cookies" not in calls[-1]
+    assert [i["url"] for i in items] == ["https://soundcloud.com/g-r-f/daft-punk-around-the-world"]
+    assert (items[0]["artist"], items[0]["title"], items[0]["thumb"], items[0]["source"]) == ("Daft Punk", "Around The World", "https://i1.sndcdn.com/b.jpg", "soundcloud")
     for i in range(12):
         last = client.get("/api/search", params={"q": f"tema {i}"})
     assert last.status_code == 429

@@ -123,28 +123,43 @@ def _guess(title: str, channel: str) -> tuple[str, str]:
     return _CHANNEL_NOISE.sub("", channel or "").strip(), clean
 
 
-def search(q: str, limit: int = 12) -> list[dict]:
-    """Búsqueda en YouTube (solo metadatos, sin descargar). Omite resultados de más de 15 min."""
+SOURCES = ("soundcloud", "youtube")   # scsearch no necesita cookies ni sufre el bloqueo de YouTube en datacenter
+
+
+def search(q: str, limit: int = 12, source: str = "soundcloud") -> list[dict]:
+    """Búsqueda en SoundCloud o YouTube (solo metadatos, sin descargar). Omite temas de más de 15 min
+    y, en SoundCloud, las vistas previas de 30 s."""
+    if source not in SOURCES:
+        raise DownloadError("Fuente de búsqueda no válida")
     cmd = ["yt-dlp", "--flat-playlist", "-J", "--no-warnings"]
     cookies = cookies_path()
-    if cookies.is_file():
+    if source == "youtube" and cookies.is_file():
         cmd += ["--cookies", str(cookies)]
+    prefix = "scsearch" if source == "soundcloud" else "ytsearch"
     try:
-        r = subprocess.run(cmd + ["--", f"ytsearch{limit + 4}:{q}"], capture_output=True, text=True, timeout=15)
+        r = subprocess.run(cmd + ["--", f"{prefix}{limit + 4}:{q}"], capture_output=True, text=True, timeout=15)
     except subprocess.TimeoutExpired:
         raise DownloadError("La búsqueda tardó demasiado; intente de nuevo")
     if r.returncode != 0:
-        raise DownloadError("YouTube no respondió a la búsqueda; intente de nuevo")
+        raise DownloadError(f"{'SoundCloud' if source == 'soundcloud' else 'YouTube'} no respondió a la búsqueda; intente de nuevo")
     out = []
     for e in json.loads(r.stdout or "{}").get("entries") or []:
         dur = e.get("duration") or 0
         vid = e.get("id")
-        if not vid or not dur or dur > 15 * 60:
+        if not vid or not dur or dur > 15 * 60 or (source == "soundcloud" and dur < 45):
             continue
-        artist, title = _guess(e.get("title") or "", e.get("channel") or e.get("uploader") or "")
-        out.append({"url": f"https://www.youtube.com/watch?v={vid}", "name": e.get("title") or "",
-                    "channel": e.get("channel") or e.get("uploader") or "", "duration": int(dur),
-                    "thumb": f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", "artist": artist, "title": title})
+        channel = e.get("channel") or e.get("uploader") or ""
+        artist, title = _guess(e.get("title") or "", channel)
+        if source == "youtube":
+            url, thumb = f"https://www.youtube.com/watch?v={vid}", f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg"
+        else:   # scsearch: webpage_url es la pista; `url` es la API interna
+            url = e.get("webpage_url") or e.get("url") or ""
+            thumbs = e.get("thumbnails") or []
+            thumb = (thumbs[-1].get("url") if thumbs else "") or ""
+            if not url:
+                continue
+        out.append({"url": url, "name": e.get("title") or "", "channel": channel, "duration": int(dur),
+                    "thumb": thumb, "artist": artist, "title": title, "source": source})
     return out[:limit]
 
 
