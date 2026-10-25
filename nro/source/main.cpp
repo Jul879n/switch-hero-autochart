@@ -302,13 +302,21 @@ static char  g_parkLog[160] = "";
 static Result initSocketsAtHeapTail() {
     u64 hs = envHasHeapOverride() ? envGetHeapOverrideSize() : 0;
     void* big = nullptr;
+    size_t bigSize = 0;
     int np = 0;
     if (hs > TAIL * 4) {
-        big = malloc(hs - TAIL - (4u << 20));
-        // malloc reutiliza primero los huecos libres de abajo: se rellenan con tapones del tamano del bloque de sockets
-        // hasta que una reserva cae por encima de `big` (ya no quedan huecos); esa ultima se libera para que la tome libnx.
+        // Mayor bloque que malloc puede dar hoy (parte del heap ya esta usado): se busca bajando de a 1 MiB.
+        size_t maxFree = 0;
+        for (size_t sz = (size_t)hs & ~((size_t)(1u << 20) - 1); sz >= TAIL * 2; sz -= (1u << 20)) {
+            void* t = malloc(sz);
+            if (t) { free(t); maxFree = sz; break; }
+        }
+        // Se deja libre una cola de TAIL al final; ahi caera el bloque de sockets.
+        if (maxFree > TAIL * 2) { bigSize = maxFree - TAIL; big = malloc(bigSize); }
+        // malloc reutiliza primero los huecos libres de abajo: se rellenan con tapones del tamano del bloque de
+        // sockets hasta que una reserva cae por encima de `big`; esa ultima se libera para que la tome libnx.
         if (big) {
-            u64 top = (u64)big + (hs - TAIL - (4u << 20));
+            u64 top = (u64)big + bigSize;
             while (np < 64) {
                 void* q = malloc(0x240000);
                 if (!q) break;
@@ -316,11 +324,12 @@ static Result initSocketsAtHeapTail() {
                 g_plugs[np++] = q;
             }
         }
-        snprintf(g_parkLog, sizeof g_parkLog, "big=%p tapones=%d", big, np);
     }
     Result rc = socketInitializeDefault();
     for (int i = 0; i < np; i++) free(g_plugs[i]);
     free(big);
+    if (R_FAILED(rc)) rc = socketInitializeDefault();      // sin espacio en la cola: red normal, como antes
+    snprintf(g_parkLog, sizeof g_parkLog, "big=%p +%zx tapones=%d rc=%x", big, bigSize, np, rc);
     if (hs) {
         u64 a = (u64)envGetHeapOverrideAddr(), end = a + hs, from = end - TAIL - (16u << 20);
         for (u64 q = from; q < end;) {
@@ -329,6 +338,11 @@ static Result initSocketsAtHeapTail() {
             if ((mi.attr & MemAttr_IsBorrowed) && mi.addr >= from) { g_tmemAddr = mi.addr; g_tmemSize = mi.size; break; }
             q = mi.addr + mi.size;
         }
+    }
+    if (FILE* fp = fopen("sdmc:/switch/sh-installer/inicio.log", "w")) {
+        fprintf(fp, "SH Installer 2.0.7\nheap %p +%llx\n%s\nsockets en %016llx +%llx\n", envGetHeapOverrideAddr(),
+                (unsigned long long)hs, g_parkLog, (unsigned long long)g_tmemAddr, (unsigned long long)g_tmemSize);
+        fclose(fp);
     }
     return rc;
 }
@@ -448,7 +462,7 @@ static void drawMain(const Config& cfg, const std::string& status, const std::st
     std::string host = cfg.server;
     auto p = host.find("://");
     if (p != std::string::npos) host = host.substr(p + 3);
-    printf("\x1b[1;36mSH Installer 2.0.6\x1b[0m  %s\n", ascii(host).c_str());
+    printf("\x1b[1;36mSH Installer 2.0.7\x1b[0m  %s\n", ascii(host).c_str());
     if (status.empty())
         printf("\x1b[1;32m[ CONECTADA ]\x1b[0m esperando envios desde la web (revisa cada %d s)\n", REFRESH_SEC);
     else
