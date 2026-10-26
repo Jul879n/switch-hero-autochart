@@ -23,6 +23,7 @@ input::placeholder { color:#7d8593; }
 .drop.over, .drop:hover { border-color:var(--accent); background:rgba(124,196,255,.08); }
 .hint { color:var(--muted); font-size:.875rem; margin:0; }
 .btn { font:inherit; font-weight:600; padding:10px 16px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:var(--ink); cursor:pointer; text-decoration:none; display:inline-block; text-align:center; }
+.links { display:flex; gap:8px; flex-wrap:wrap; }
 .btn.ghost { background:transparent; color:var(--fg); border-color:var(--line); }
 .btn.danger { background:transparent; color:var(--err); border-color:var(--err); }
 .btn:hover:not(:disabled) { filter:brightness(1.1); }

@@ -1,4 +1,4 @@
-// SH Installer: se vincula a una cuenta del servidor Autochart por QR e instala en la SD las canciones
+// Autochart Hero: se vincula a una cuenta del servidor Autochart por QR e instala en la SD las canciones
 // que se envían desde la web (también permite instalar a mano).
 #include <switch.h>
 #include <curl/curl.h>

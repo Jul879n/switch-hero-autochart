@@ -4,7 +4,7 @@ Genera cartas jugables para [Switch Hero](https://github.com/R-drg/switch-hero) 
 (archivo o URL): Guitarra, Co-op, Rítmica, Bajo, Teclado y Batería, en Easy/Medium/Hard/Expert.
 
 - `server/`: API FastAPI + web (cuentas propias; solo el admin crea o invita usuarios) + pipeline `autochart`.
-- `nro/`: homebrew «SH Installer» (libnx + libcurl) que instala las canciones en la SD.
+- `nro/`: homebrew «Autochart Hero» (libnx + libcurl) que instala las canciones en la SD.
 - `scripts/push_ftp.py`: respaldo, sube un ZIP o carpeta a la Switch por FTP.
 
 ## Variables de entorno del servidor
@@ -19,9 +19,9 @@ Genera cartas jugables para [Switch Hero](https://github.com/R-drg/switch-hero) 
 ## Pruebas
 `cd server && pytest` (las de tempo con audio requieren librosa).
 
-## .nro («SH Installer»)
+## .nro («Autochart Hero»)
 Compilar: `DEVKITPRO=/opt/devkitpro cmake -S nro -B nro/build -G Ninja -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/Switch.cmake && cmake --build nro/build`.
-Copiar `nro/build/sh-installer.nro` a `sdmc:/switch/`. Al abrirlo por primera vez muestra un QR: escanéelo con el teléfono,
+Copiar `nro/build/autochart-hero.nro` a `sdmc:/switch/`. Al abrirlo por primera vez muestra un QR: escanéelo con el teléfono,
 inicie sesión en la web y pulse «Vincular». La sesión queda en `sdmc:/switch/sh-installer/config.ini`
 (`server=` es opcional; por defecto `https://switchhero.jarayacontreras.cl`). Desde la web (también desde el teléfono),
 «Enviar a la Switch» pone la canción en cola y la app la instala sola mientras esté abierta (consulta cada 10 s).
