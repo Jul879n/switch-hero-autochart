@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import re
 import secrets
 import shutil
@@ -268,6 +269,7 @@ def admin_delete_user(uid: int, admin: dict = Depends(auth.admin_user)):
     if uid == admin["id"]:
         raise HTTPException(400, "No puede eliminarse a sí mismo")
     auth.revoke_user_sessions(uid)
+    storage._q("DELETE FROM playlists WHERE user_id=?", (uid,))
     storage._q("DELETE FROM users WHERE id=?", (uid,))
     return {"ok": True}
 
@@ -407,8 +409,7 @@ _search_cache: dict = {}
 _search_hits: dict = {}
 
 
-@app.get("/api/search")
-def search_songs(q: str = "", source: str = "soundcloud", user: dict = Depends(auth.current_user)):
+def _search_cached(q: str, source: str, user: dict) -> list[dict]:
     q = " ".join(q.split())[:120]
     if len(q) < 2:
         raise HTTPException(400, "Escriba al menos 2 letras")
@@ -417,7 +418,7 @@ def search_songs(q: str = "", source: str = "soundcloud", user: dict = Depends(a
     key = f"{source}:{q.lower()}"
     hit = _search_cache.get(key)
     if hit and time.time() - hit[0] < 3600:
-        return {"items": hit[1]}
+        return hit[1]
     now = time.time()
     recent = [t for t in _search_hits.get(user["id"], []) if now - t < 60]
     if len(recent) >= 10:                        # no gatillar bloqueos al servidor
@@ -430,7 +431,107 @@ def search_songs(q: str = "", source: str = "soundcloud", user: dict = Depends(a
     if len(_search_cache) > 300:
         _search_cache.clear()
     _search_cache[key] = (now, items)
-    return {"items": items}
+    return items
+
+
+@app.get("/api/search")
+def search_songs(q: str = "", source: str = "soundcloud", user: dict = Depends(auth.current_user)):
+    return {"items": _search_cached(q, source, user)}
+
+
+PL_STATES = ("pending", "found", "none", "queued", "error")
+
+
+def _clean_tracks(raw) -> list[dict]:
+    """Pistas de una playlist guardada, saneadas (el cliente las reescribe en cada cambio)."""
+    out = []
+    for t in (raw if isinstance(raw, list) else [])[:500]:
+        if not isinstance(t, dict) or not str(t.get("title", "")).strip():
+            continue
+        m = t.get("match")
+        match = ({"url": str(m.get("url", ""))[:2000], "name": str(m.get("name", ""))[:300], "duration": int(m.get("duration") or 0)}
+                 if isinstance(m, dict) and m.get("url") else None)
+        state = t.get("state") if t.get("state") in PL_STATES else "pending"      # «buscando» no se guarda
+        out.append({"artist": str(t.get("artist", ""))[:200], "title": str(t["title"])[:200], "duration": int(t.get("duration") or 0),
+                    "sel": bool(t.get("sel", True)), "state": state if match or state not in ("found",) else "pending",
+                    "match": match, "msg": str(t.get("msg", ""))[:200] if state == "error" else "",
+                    "job": t["job"] if state == "queued" and re.fullmatch(r"[0-9a-f]{12}", str(t.get("job", ""))) else ""})
+    return out
+
+
+def _pl_row_or_404(pid: int, user: dict) -> dict:
+    r = storage._q("SELECT * FROM playlists WHERE id=? AND user_id=?", (pid, user["id"])).fetchone()
+    if not r:
+        raise HTTPException(404, "Playlist inexistente")
+    return dict(r)
+
+
+def _pl_public(r: dict) -> dict:
+    return {"id": r["id"], "name": r["name"], "tracks": json.loads(r["tracks"])}
+
+
+@app.post("/api/playlist")
+async def playlist(request: Request, user: dict = Depends(auth.current_user)):
+    """Carga una playlist de Spotify y la guarda en las del usuario; si ya la tenía, conserva el avance de cada pista."""
+    body = await request.json()
+    try:
+        data = await run_in_threadpool(jobs.spotify_playlist, str(body.get("url", "")))
+    except jobs.DownloadError as e:
+        raise HTTPException(400, str(e))
+    old = storage._q("SELECT * FROM playlists WHERE user_id=? AND spotify_id=?", (user["id"], data["id"])).fetchone()
+    prev = {(t["artist"], t["title"]): t for t in json.loads(old["tracks"])} if old else {}
+    tracks = [prev.get((t["artist"], t["title"])) or {**t, "sel": True, "state": "pending", "match": None, "msg": "", "job": ""} for t in data["tracks"]]
+    storage._q("INSERT INTO playlists(user_id,spotify_id,name,tracks,updated) VALUES(?,?,?,?,?) "
+               "ON CONFLICT(user_id,spotify_id) DO UPDATE SET name=excluded.name, tracks=excluded.tracks, updated=excluded.updated",
+               (user["id"], data["id"], data["name"], json.dumps(tracks), time.time()))
+    row = storage._q("SELECT * FROM playlists WHERE user_id=? AND spotify_id=?", (user["id"], data["id"])).fetchone()
+    return _pl_public(dict(row))
+
+
+@app.get("/api/playlists")
+def list_playlists(user: dict = Depends(auth.current_user)):
+    rows = storage._q("SELECT * FROM playlists WHERE user_id=? ORDER BY updated DESC", (user["id"],)).fetchall()
+    out = []
+    for r in rows:
+        tr = json.loads(r["tracks"])
+        out.append({"id": r["id"], "name": r["name"], "total": len(tr), "updated": r["updated"],
+                    **{s: sum(1 for t in tr if t["state"] == s) for s in ("found", "none", "queued")}})
+    return out
+
+
+@app.get("/api/playlists/{pid}")
+def get_playlist(pid: int, user: dict = Depends(auth.current_user)):
+    return _pl_public(_pl_row_or_404(pid, user))
+
+
+@app.put("/api/playlists/{pid}")
+async def save_playlist(pid: int, request: Request, user: dict = Depends(auth.current_user)):
+    _pl_row_or_404(pid, user)
+    body = await request.json()
+    storage._q("UPDATE playlists SET tracks=?, updated=? WHERE id=?", (json.dumps(_clean_tracks(body.get("tracks"))), time.time(), pid))
+    return {"ok": True}
+
+
+@app.delete("/api/playlists/{pid}")
+def delete_playlist(pid: int, user: dict = Depends(auth.current_user)):
+    _pl_row_or_404(pid, user)
+    storage._q("DELETE FROM playlists WHERE id=?", (pid,))
+    return {"ok": True}
+
+
+@app.post("/api/match")
+async def match_track(request: Request, user: dict = Depends(auth.current_user)):
+    """Mejor coincidencia de una pista (artista, título, duración) en la fuente elegida; `null` si no hay."""
+    body = await request.json()
+    artist, title = str(body.get("artist", "")).strip()[:200], str(body.get("title", "")).strip()[:200]
+    if not title:
+        raise HTTPException(400, "Falta el título")
+    try:
+        duration = int(body.get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    items = await run_in_threadpool(_search_cached, f"{artist} {title}", str(body.get("source", "soundcloud")), user)
+    return {"match": jobs.best_match(items, artist, title, duration)}
 
 
 @app.get("/api/suggest")

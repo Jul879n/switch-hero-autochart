@@ -123,14 +123,45 @@ def _guess(title: str, channel: str) -> tuple[str, str]:
     return _CHANNEL_NOISE.sub("", channel or "").strip(), clean
 
 
-SOURCES = ("soundcloud", "youtube")   # scsearch no necesita cookies ni sufre el bloqueo de YouTube en datacenter
+SOURCES = ("soundcloud", "youtube", "mp3pm")   # scsearch no necesita cookies ni sufre el bloqueo de YouTube en datacenter
+_MP3PM_ITEM = re.compile(r'<li class="cplayer-sound-item"[^>]*data-download-url="([^"]+)".*?'
+                         r'cplayer-data-sound-author">([^<]*)<.*?cplayer-data-sound-title">([^<]*)<.*?'
+                         r'cplayer-data-sound-time">(\d+):(\d+)<', re.S)
+
+
+def _search_mp3pm(q: str, limit: int) -> list[dict]:
+    """mp3.pm no tiene extractor en yt-dlp: se lee su página de resultados (HTML) y se usa el enlace directo al mp3."""
+    import html
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request("https://mp3.pm/search?" + urlencode({"q": q}), headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            page = r.read(2_000_000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:                     # sin resultados
+            return []
+        raise DownloadError("MP3.pm no respondió a la búsqueda; intente de nuevo")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise DownloadError("MP3.pm no respondió a la búsqueda; intente de nuevo")
+    out = []
+    for url, artist, title, mm, ss in _MP3PM_ITEM.findall(page):
+        dur = int(mm) * 60 + int(ss)
+        url, artist, title = html.unescape(url), html.unescape(artist).strip(), html.unescape(title).strip()
+        if not dur or dur > 15 * 60 or urlparse(url).hostname is None or not urlparse(url).hostname.endswith(".mp3.pm"):
+            continue
+        out.append({"url": url, "name": f"{artist} - {title}", "channel": "MP3.pm", "duration": dur,
+                    "thumb": "", "artist": artist, "title": title, "source": "mp3pm"})
+    return out[:limit]
 
 
 def search(q: str, limit: int = 12, source: str = "soundcloud") -> list[dict]:
-    """Búsqueda en SoundCloud o YouTube (solo metadatos, sin descargar). Omite temas de más de 15 min
+    """Búsqueda en SoundCloud, YouTube o MP3.pm (solo metadatos, sin descargar). Omite temas de más de 15 min
     y, en SoundCloud, las vistas previas de 30 s."""
     if source not in SOURCES:
         raise DownloadError("Fuente de búsqueda no válida")
+    if source == "mp3pm":
+        return _search_mp3pm(q, limit)
     cmd = ["yt-dlp", "--flat-playlist", "-J", "--no-warnings"]
     cookies = cookies_path()
     if source == "youtube" and cookies.is_file():
@@ -161,6 +192,59 @@ def search(q: str, limit: int = 12, source: str = "soundcloud") -> list[dict]:
         out.append({"url": url, "name": e.get("title") or "", "channel": channel, "duration": int(dur),
                     "thumb": thumb, "artist": artist, "title": title, "source": source})
     return out[:limit]
+
+
+_SPOTIFY_ID = re.compile(r"^/(?:intl-[a-z]{2}(?:-[A-Za-z]{2})?/)?playlist/([A-Za-z0-9]{22})/?$")
+
+
+def spotify_playlist(url: str) -> dict:
+    """Pistas de una playlist pública de Spotify leyendo su página embed (sin API ni credenciales; no es una API
+    documentada, así que puede dejar de funcionar). Devuelve {id, name, tracks: [{artist, title, duration}]}."""
+    import urllib.error
+    import urllib.request
+    u = urlparse(url.strip())
+    m = _SPOTIFY_ID.match(u.path)
+    if u.scheme != "https" or u.hostname != "open.spotify.com" or not m:
+        raise DownloadError("Pegue el enlace de una playlist de Spotify (open.spotify.com/playlist/…)")
+    req = urllib.request.Request(f"https://open.spotify.com/embed/playlist/{m.group(1)}", headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            page = r.read(4_000_000).decode("utf-8", "replace")
+        data = json.loads(re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', page, re.S).group(1))
+        ent = data["props"]["pageProps"]["state"]["data"]["entity"]
+        tracks = [{"artist": t.get("subtitle", "").replace("\xa0", " ").strip(), "title": t.get("title", "").strip(),
+                   "duration": int((t.get("duration") or 0) // 1000)} for t in ent.get("trackList") or [] if t.get("title")]
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise DownloadError("Spotify no respondió; intente de nuevo")
+    except (AttributeError, KeyError, TypeError, ValueError):
+        raise DownloadError("No se pudo leer la playlist (¿es pública?)")
+    if not tracks:
+        raise DownloadError("La playlist no tiene canciones o no es pública")
+    return {"id": m.group(1), "name": ent.get("name") or "Playlist", "tracks": tracks}
+
+
+def _tokens(text: str) -> set[str]:
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode()
+    return set(re.findall(r"[a-z0-9]+", plain))
+
+
+_VARIANTS = {"remix", "mashup", "mix", "bootleg", "slowed", "sped", "nightcore", "reverb", "karaoke", "instrumental", "cover", "acoustic", "8d"}
+
+
+def best_match(items: list[dict], artist: str, title: str, duration: int) -> dict | None:
+    """El resultado cuya duración está a ±10 s de la pista, con el título y el artista presentes en su nombre.
+    Si hay varios, el de duración más cercana."""
+    want, first = _tokens(re.sub(r"[(\[].*?[)\]]", " ", title)), _tokens(re.split(r",|&|\bft\b|\bfeat\b", artist, flags=re.I)[0])
+    best, best_diff = None, 11
+    for it in items:
+        have = _tokens(f"{it['name']} {it.get('channel', '')}")
+        if (have & _VARIANTS) - _tokens(title):      # slowed, nightcore, karaoke…: no es la grabación original
+            continue
+        diff = abs(it["duration"] - duration) if duration else 0
+        if diff < best_diff and want and len(want & have) / len(want) >= 0.6 and (not first or len(first & have) / len(first) >= 0.6):
+            best, best_diff = it, diff
+    return best
 
 
 def download(url: str, dest: Path) -> dict:

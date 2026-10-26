@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const STAGES = { descarga: "Descargando", separacion: "Separando instrumentos", tempo: "Detectando tempo",
   transcripcion: "Transcribiendo notas", carta: "Generando carta", empaque: "Empaquetando", listo: "Listo", "": "En cola" };
 const STATUS = { queued: "En cola", running: "En proceso", done: "Terminada", error: "Con error" };
-let me = null, timer = null, file = null, lastJobs = "", lastShared = "";
+let me = null, timer = null, file = null, lastJobs = "", lastShared = "", jobsById = null;
 
 function el(tag, props = {}, ...kids) {
   const n = Object.assign(document.createElement(tag), props);
@@ -45,6 +45,26 @@ function transition(update) {
   const vt = document.startViewTransition(update);   // el callback corre de forma asíncrona
   vt.ready.catch(() => {}); vt.finished.catch(() => {});   // una transición interrumpida por otra rechaza con AbortError
   return vt.updateCallbackDone;
+}
+
+/* Datos de un resultado de búsqueda que conviene revisar: vacíos o con ruido (paréntesis, «Ft», comas, dominios, textos largos). */
+const dudoso = (it) => !it.artist || !it.title || /[([]/.test(it.title) || /,|\b(ft|feat|featuring)\b/i.test(it.artist)
+  || /\.(net|com|org|pm|cl|ru)\b/i.test(`${it.artist} ${it.title}`) || it.artist.length > 40 || it.title.length > 60;
+function songDialog(artist, title) {
+  const d = $("song-dialog"), a = $("song-artist"), t = $("song-title");
+  a.value = artist; t.value = title; fieldErr(a, ""); fieldErr(t, "");
+  return new Promise((res) => {
+    const done = (v) => { d.close(); $("song-form").onsubmit = $("song-no").onclick = d.onclose = null; res(v); };
+    $("song-form").onsubmit = (e) => {
+      e.preventDefault();
+      const ok = fieldErr(a, a.value.trim() ? "" : "Ingrese el artista.") & fieldErr(t, t.value.trim() ? "" : "Ingrese el título.");
+      if (!ok) return (a.value.trim() ? t : a).focus();
+      done({ artist: a.value.trim(), title: t.value.trim() });
+    };
+    $("song-no").onclick = () => done(null);
+    d.onclose = () => res(null);              // Esc
+    d.showModal(); (a.value.trim() ? t : a).focus();
+  });
 }
 
 /* ---------- pestañas ---------- */
@@ -121,7 +141,7 @@ function combo(input, kind, extra) {
     if (e.key === "ArrowDown") { e.preventDefault(); idx = (idx + 1) % n; mark(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); idx = (idx - 1 + n) % n; mark(); }
     else if (e.key === "Enter" && idx >= 0) { e.preventDefault(); opts()[idx].dispatchEvent(new MouseEvent("mousedown")); }
-    else if (e.key === "Escape") close();
+    else if (e.key === "Escape") { e.preventDefault(); close(); }   // dentro de un diálogo, Esc cierra solo la lista
   });
   input.addEventListener("blur", close);
 }
@@ -153,7 +173,7 @@ async function enter(user) {
   selectTab(!isAdmin && saved === "tab-admin" ? "tab-songs" : saved);
   if (!$("pair").hidden) selectTab("tab-switch");
   if (user.role === "admin") { loadUsers().catch(() => {}); loadCookies(); }
-  $("share-toggle").checked = user.share; lastJobs = ""; lastShared = ""; refresh();
+  loadPlaylists(); $("share-toggle").checked = user.share; lastJobs = ""; lastShared = ""; refresh();
   clearInterval(timer); timer = setInterval(refresh, 3000);
 }
 
@@ -269,15 +289,17 @@ $("search-form").addEventListener("submit", async (e) => {
     const { items } = await api(`/api/search?${new URLSearchParams({ q, source })}`);
     say("search-msg", items.length ? `${items.length} resultados` : "Sin resultados.", !!items.length);
     for (const it of items) {
-      const li = el("li", { className: "result" });
-      li.append(el("img", { src: it.thumb, alt: "", loading: "lazy" }));
+      const li = el("li", { className: it.thumb ? "result" : "result no-thumb" });
+      if (it.thumb) li.append(el("img", { src: it.thumb, alt: "", loading: "lazy" }));
       const info = el("div", {});
       info.append(el("h3", { textContent: it.name }), el("div", { className: "meta", textContent: `${it.channel} · ${mmss(it.duration)}` }));
       const go = el("button", { type: "button", className: "btn", textContent: "Generar carta" });
       go.setAttribute("aria-label", `Generar carta de ${it.name}`);
       go.addEventListener("click", async () => {
+        let data = { artist: it.artist, title: it.title };
+        if (dudoso(it)) { data = await songDialog(it.artist, it.title); if (!data) return go.focus(); }
         const fd = new FormData();
-        fd.append("url", it.url); fd.append("title", it.title); fd.append("artist", it.artist);
+        fd.append("url", it.url); fd.append("title", data.title); fd.append("artist", data.artist);
         go.disabled = true; go.textContent = "Enviando…";
         try { await api("/api/jobs", { method: "POST", body: fd }); go.textContent = "En cola ✓"; lastJobs = ""; refresh(); }
         catch (err) { go.disabled = false; go.textContent = "Generar carta"; alert(err.message); }
@@ -287,6 +309,167 @@ $("search-form").addEventListener("submit", async (e) => {
     }
   } catch (err) { say("search-msg", err.message); }
   finally { $("search-btn").disabled = false; }
+});
+
+/* ---------- playlist de Spotify: lista de pendientes → buscar coincidencias → generar ---------- */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const PL_STATE = { pending: ["Pendiente", ""], searching: ["Buscando…", ""], found: ["Encontrada", "ok"], none: ["Sin coincidencia", "off"],
+  queued: ["En cola", "ok"], error: ["Error", "off"] };
+/* Estado visible de una pista: si ya se generó, el de su canción en «Canciones». */
+function plChip(t) {
+  if (t.state === "queued" && t.job && jobsById) {
+    const j = jobsById[t.job];
+    return !j ? ["Canción eliminada", "off"] : [STATUS[j.status], j.status === "done" ? "ok" : j.status === "error" ? "off" : ""];
+  }
+  return PL_STATE[t.state];
+}
+const pl = { id: null, tracks: [], busy: false, stop: false, snap: "", timer: null };
+
+/* Guardado automático: lo que se guarda es el estado de cada pista; «buscando» vuelve a «pendiente». */
+const plSnapshot = () => JSON.stringify(pl.tracks.map((t) => ({ artist: t.artist, title: t.title, duration: t.duration, sel: t.sel,
+  state: t.state === "searching" ? "pending" : t.state, match: t.match, msg: t.state === "error" ? t.msg : "", job: t.job || "" })));
+async function plSave(now) {
+  clearTimeout(pl.timer);
+  if (!pl.id) return;
+  const run = async () => {
+    const snap = plSnapshot();
+    if (snap === pl.snap) return;
+    pl.snap = snap;
+    try { await send("PUT", `/api/playlists/${pl.id}`, { tracks: JSON.parse(snap) }); }
+    catch { pl.snap = ""; }                      // se reintenta en el siguiente cambio
+  };
+  if (now) await run(); else pl.timer = setTimeout(run, 700);
+}
+function plRender() {
+  plSave();
+  const ul = $("pl-list"); ul.replaceChildren();
+  pl.tracks.forEach((t, i) => {
+    const box = el("input", { type: "checkbox", checked: t.sel, disabled: pl.busy || t.state === "queued" });
+    box.addEventListener("change", () => { t.sel = box.checked; plRender(); });
+    const [label, cls] = plChip(t);
+    const li = el("li", { className: "item" },
+      el("label", { className: "check" }, box, el("span", { textContent: `${t.artist} – ${t.title} (${mmss(t.duration)})` })),
+      el("div", { className: "chips" }, el("span", { className: `chip ${cls}`, textContent: label })));
+    if (t.match) li.append(el("span", { className: "hint", textContent: `${t.match.name} · ${mmss(t.match.duration)}` }));
+    if (t.msg) li.append(el("span", { className: "hint", textContent: t.msg }));
+    ul.append(li);
+  });
+  const n = (s) => pl.tracks.filter((t) => t.state === s).length;
+  $("pl-summary").textContent = `${pl.tracks.length} pistas · ${n("found")} encontradas · ${n("none")} sin coincidencia · ${n("queued")} en cola`;
+  $("pl-search").disabled = pl.busy || !pl.tracks.some((t) => t.sel && t.state === "pending");
+  $("pl-gen").disabled = pl.busy || !pl.tracks.some((t) => t.sel && t.state === "found");
+  $("pl-all").disabled = pl.busy || !pl.tracks.some((t) => t.sel && (t.state === "pending" || t.state === "found"));
+  const pick = pl.tracks.filter((t) => t.state !== "queued");       // las ya enviadas a la cola no se vuelven a marcar
+  $("pl-selall").textContent = pick.length && pick.every((t) => t.sel) ? "Quitar selección" : "Seleccionar todo";
+  $("pl-selall").disabled = pl.busy || !pick.length;
+  $("pl-stop").hidden = !pl.busy; $("pl-src").disabled = pl.busy;
+}
+async function plWait(ms) { for (let t = 0; t < ms && !pl.stop; t += 250) await sleep(250); }
+async function plRun(work) {
+  pl.busy = true; pl.stop = false; plRender();
+  try { await work(); } finally { pl.busy = false; plRender(); }
+}
+const gate = { last: 0 };      // máx. 10 búsquedas por minuto (límite del servidor)
+async function plSearchTrack(t) {
+  while (!pl.stop) {
+    await plWait(Math.max(0, 6500 - (Date.now() - gate.last)));
+    if (pl.stop) return;
+    gate.last = Date.now(); t.state = "searching"; t.msg = ""; plRender();
+    try {
+      const r = await post("/api/match", { artist: t.artist, title: t.title, duration: t.duration, source: $("pl-src").value });
+      t.match = r.match; t.state = r.match ? "found" : "none"; plRender(); return;
+    } catch (err) {
+      t.state = "pending"; t.msg = err.message; plRender();
+      if (!/Demasiadas/.test(err.message)) { pl.stop = true; return; }
+      await plWait(20000);                       // límite: espera y reintenta la misma pista
+    }
+  }
+}
+async function plGenTrack(t) {
+  while (!pl.stop) {
+    const fd = new FormData(); fd.append("url", t.match.url); fd.append("title", t.title); fd.append("artist", t.artist);
+    try { const job = await api("/api/jobs", { method: "POST", body: fd }); t.state = "queued"; t.job = job.id; t.msg = ""; lastJobs = ""; refresh(); plRender(); return; }
+    catch (err) {
+      if (/en proceso/.test(err.message)) { t.msg = "Esperando espacio en la cola…"; plRender(); await plWait(5000); continue; }
+      t.state = "error"; t.msg = err.message; plRender(); return;
+    }
+  }
+}
+const plTodo = (t, state) => t.sel && t.state === state;
+$("pl-search").addEventListener("click", () => plRun(async () => {
+  for (const t of pl.tracks) { if (pl.stop) break; if (plTodo(t, "pending")) await plSearchTrack(t); }
+}));
+$("pl-gen").addEventListener("click", () => plRun(async () => {
+  for (const t of pl.tracks) { if (pl.stop) break; if (plTodo(t, "found")) await plGenTrack(t); }
+}));
+/* Generar todo: por cada pista seleccionada busca y, solo si coincide (artista, título y duración), la manda a la cola. */
+$("pl-all").addEventListener("click", () => plRun(async () => {
+  for (const t of pl.tracks) {
+    if (pl.stop) break;
+    if (plTodo(t, "pending")) await plSearchTrack(t);
+    if (!pl.stop && plTodo(t, "found")) await plGenTrack(t);
+  }
+}));
+$("pl-selall").addEventListener("click", () => {
+  const pick = pl.tracks.filter((t) => t.state !== "queued"), on = !pick.every((t) => t.sel);
+  pick.forEach((t) => { t.sel = on; }); plRender();
+});
+$("pl-stop").addEventListener("click", () => { pl.stop = true; });
+$("pl-close").addEventListener("click", () => $("pl-dialog").close());
+$("pl-dialog").addEventListener("close", async () => { pl.stop = true; await plSave(true); loadPlaylists(); });
+async function openPlaylist(r) {
+  while (pl.busy) await sleep(100);              // una búsqueda anterior termina de detenerse
+  pl.id = r.id; pl.tracks = r.tracks.map((t) => ({ ...t })); pl.snap = plSnapshot();
+  $("pl-dialog-h").textContent = r.name; plRender(); $("pl-dialog").showModal(); $("pl-search").focus();
+}
+const plOpen = new Map();     // playlists desplegadas: id -> { tracks, ul }
+function plRenderOpen() {
+  for (const { tracks, ul } of plOpen.values()) {
+    ul.replaceChildren();
+    for (const t of tracks) {
+      const [label, cls] = plChip(t);
+      ul.append(el("li", { className: "pl-track" }, el("span", { textContent: `${t.artist} – ${t.title} (${mmss(t.duration)})` }),
+        el("span", { className: `chip ${cls}`, textContent: label })));
+    }
+  }
+}
+async function loadPlaylists() {
+  const ul = $("playlists"); ul.replaceChildren(); plOpen.clear();
+  let list = [];
+  try { list = await api("/api/playlists"); } catch { return; }
+  if (!list.length) { ul.append(el("li", { className: "empty", textContent: "Aún no ha cargado ninguna playlist." })); return; }
+  for (const p of list) {
+    const open = el("button", { type: "button", className: "btn ghost", textContent: "Abrir" });
+    open.setAttribute("aria-label", `Abrir ${p.name}`);
+    open.addEventListener("click", async () => { try { await openPlaylist(await api(`/api/playlists/${p.id}`)); } catch (err) { toast(err.message, false); } });
+    const del = el("button", { type: "button", className: "btn danger", textContent: "Eliminar" });
+    del.setAttribute("aria-label", `Eliminar ${p.name}`);
+    del.addEventListener("click", async () => {
+      if (!await confirmDialog(`¿Eliminar «${p.name}»?`, "Se pierde la lista de pendientes; las canciones ya generadas se conservan.")) return;
+      try { await send("DELETE", `/api/playlists/${p.id}`); toast("Playlist eliminada."); } catch (err) { toast(err.message, false); }
+      loadPlaylists();
+    });
+    const tracks = el("ul", { className: "pl-tracks" });
+    const fold = el("details", { className: "fold" },
+      el("summary", {}, el("h3", { textContent: p.name }),
+        el("span", { className: "hint", textContent: `${p.total} pistas · ${p.found} encontradas · ${p.none} sin coincidencia · ${p.queued} en cola` })), tracks);
+    fold.addEventListener("toggle", async () => {
+      if (!fold.open) { plOpen.delete(p.id); return; }
+      try { plOpen.set(p.id, { tracks: (await api(`/api/playlists/${p.id}`)).tracks, ul: tracks }); plRenderOpen(); }
+      catch (err) { toast(err.message, false); }
+    });
+    ul.append(el("li", { className: "item" }, fold, el("div", { className: "actions" }, open, del)));
+  }
+}
+$("pl-url").addEventListener("input", () => fieldErr($("pl-url"), ""));
+$("pl-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const url = $("pl-url").value.trim();
+  if (!/^https:\/\/open\.spotify\.com\/(intl-[\w-]+\/)?playlist\//.test(url)) return fieldErr($("pl-url"), "Pegue el enlace de una playlist de Spotify.") || $("pl-url").focus();
+  try {
+    const r = await busy(e.submitter, () => post("/api/playlist", { url }), "Cargando…");
+    await openPlaylist(r);
+  } catch (err) { fieldErr($("pl-url"), err.message); }
 });
 
 $("form").addEventListener("submit", async (e) => {
@@ -487,7 +670,7 @@ async function refresh() {
   try {
     const list = await api("/api/jobs");
     const key = JSON.stringify(list);
-    if (key !== lastJobs) { lastJobs = key; render(list); }     // no reconstruye si nada cambió (conserva el foco)
+    if (key !== lastJobs) { lastJobs = key; jobsById = Object.fromEntries(list.map((j) => [j.id, j])); render(list); plRenderOpen(); }     // no reconstruye si nada cambió (conserva el foco)
     const shared = await api("/api/shared"), skey = JSON.stringify(shared);
     if (skey !== lastShared) { lastShared = skey; renderShared(shared); }
   } catch { /* se reintenta en el siguiente ciclo */ }
@@ -552,4 +735,6 @@ async function saveToFolder(j, btn) {
 combo($("artist"), "artist");
 combo($("title"), "title", () => $("artist").value.trim());
 combo($("search-q"), "song");
+combo($("song-artist"), "artist");
+combo($("song-title"), "title", () => $("song-artist").value.trim());
 $("search-q").addEventListener("pick", () => $("search-form").requestSubmit());

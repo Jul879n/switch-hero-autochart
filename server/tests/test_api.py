@@ -487,3 +487,117 @@ def test_share_between_users(client):
     client.post("/api/auth/logout")
     login(client)
     assert any(x["id"] == jid for x in client.get("/api/jobs").json())       # el admin ve todo
+
+
+def test_search_mp3pm(client, monkeypatch):
+    import io
+    import urllib.request
+    page = ('<ul><li class="cplayer-sound-item" data-sound-id="1" data-sound-url="https://cs1.mp3.pm/listen/1/a.mp3" '
+            'data-download-url="https://cs1.mp3.pm/download/1/a.mp3?x=1&amp;y=2" data-share-url="x"><h4><a><i class="cplayer-data-sound-author">Queen &amp; Co</i></a>'
+            '<a><b class="cplayer-data-sound-title">Tema</b></a></h4><em class="cplayer-data-sound-time">04:11</em></li>'
+            '<li class="cplayer-sound-item" data-download-url="https://evil.example/x.mp3"><i class="cplayer-data-sound-author">A</i>'
+            '<b class="cplayer-data-sound-title">B</b><em class="cplayer-data-sound-time">03:00</em></li>'
+            '<li class="cplayer-sound-item" data-download-url="https://cs1.mp3.pm/download/2/b.mp3"><i class="cplayer-data-sound-author">A</i>'
+            '<b class="cplayer-data-sound-title">Largo</b><em class="cplayer-data-sound-time">45:00</em></li></ul>').encode()
+    seen = []
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=0: seen.append(req.full_url) or io.BytesIO(page))
+    login(client)
+    items = client.get("/api/search", params={"q": "queen mp3pm", "source": "mp3pm"}).json()["items"]
+    assert seen[0].startswith("https://mp3.pm/search?q=")
+    assert items == [{"url": "https://cs1.mp3.pm/download/1/a.mp3?x=1&y=2", "name": "Queen & Co - Tema", "channel": "MP3.pm",
+                      "duration": 251, "thumb": "", "artist": "Queen & Co", "title": "Tema", "source": "mp3pm"}]   # descarta otro dominio y >15 min
+
+
+def _spotify_page(tracks):
+    import json
+    data = {"props": {"pageProps": {"state": {"data": {"entity": {"name": "Mi lista", "trackList": tracks}}}}}}
+    return ('<html><script id="__NEXT_DATA__" type="application/json">' + json.dumps(data) + "</script></html>").encode()
+
+
+def test_spotify_playlist(client, monkeypatch):
+    import io
+    import urllib.request
+    page = _spotify_page([{"title": "Tema Uno", "subtitle": "Banda\xa0Uno", "duration": 200500}, {"title": "", "subtitle": "x"}])
+    seen = []
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=0: seen.append(req.full_url) or io.BytesIO(page))
+    assert client.post("/api/playlist", json={"url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"}).status_code == 401
+    login(client)
+    ok = "https://open.spotify.com/intl-es/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abc"
+    r = client.post("/api/playlist", json={"url": ok})
+    assert r.status_code == 200 and r.json()["name"] == "Mi lista" and r.json()["id"] >= 1
+    assert r.json()["tracks"] == [{"artist": "Banda Uno", "title": "Tema Uno", "duration": 200, "sel": True, "state": "pending", "match": None, "msg": "", "job": ""}]
+    assert seen == ["https://open.spotify.com/embed/playlist/37i9dQZF1DXcBWIGoYBM5M"]
+    for bad in ("https://evil.com/playlist/37i9dQZF1DXcBWIGoYBM5M", "http://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+                "https://open.spotify.com.evil.com/playlist/37i9dQZF1DXcBWIGoYBM5M", "https://open.spotify.com/playlist/corto", ""):
+        assert client.post("/api/playlist", json={"url": bad}).status_code == 400
+    assert len(seen) == 1                                                   # ningún rechazo llegó a la red
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=0: io.BytesIO(b"<html>sin datos</html>"))
+    assert client.post("/api/playlist", json={"url": ok}).status_code == 400
+
+
+def test_best_match():
+    from app import jobs
+    items = [{"name": "Banda Uno - Tema Uno (Slowed Down)", "channel": "x", "duration": 205},
+             {"name": "Otra - Tema Uno", "channel": "y", "duration": 200},
+             {"name": "Banda Uno - Tema Uno (Remix)", "channel": "z", "duration": 201},
+             {"name": "BANDA UNO - Tema Uno", "channel": "w", "duration": 203},
+             {"name": "Banda Uno - Tema Uno", "channel": "w", "duration": 260}]
+    m = jobs.best_match(items, "Banda Uno, Invitada", "Tema Uno (feat. Invitada)", 200)
+    assert m["duration"] == 203                                              # descarta slowed, remix, otro artista y duración lejana
+    assert jobs.best_match(items, "Banda Uno", "Tema Uno", 400) is None
+    assert jobs.best_match(items, "Banda Uno", "Otro Título", 200) is None
+
+
+def test_match_endpoint(client, monkeypatch):
+    from app import jobs
+    login(client)
+    calls = []
+    monkeypatch.setattr(jobs, "search", lambda q, source="soundcloud", limit=12: calls.append((q, source)) or
+                        [{"url": "https://x.y/a", "name": "Banda Uno - Tema Uno", "channel": "c", "duration": 201}])
+    r = client.post("/api/match", json={"artist": "Banda Uno", "title": "Tema Uno", "duration": 200, "source": "soundcloud"})
+    assert r.status_code == 200 and r.json()["match"]["url"] == "https://x.y/a" and calls == [("Banda Uno Tema Uno", "soundcloud")]
+    assert client.post("/api/match", json={"artist": "Banda Uno", "title": "Tema Uno", "duration": 90, "source": "soundcloud"}).json() == {"match": None}
+    assert client.post("/api/match", json={"artist": "a", "title": "", "source": "soundcloud"}).status_code == 400
+    assert client.post("/api/match", json={"artist": "a", "title": "t", "source": "spotify"}).status_code == 400
+    client.post("/api/auth/logout")
+    assert client.post("/api/match", json={"artist": "a", "title": "t"}).status_code == 401
+
+
+def test_saved_playlists(client, monkeypatch):
+    import io
+    import urllib.request
+    from app import auth
+    page = _spotify_page([{"title": "Uno", "subtitle": "A", "duration": 100000}, {"title": "Dos", "subtitle": "B", "duration": 200000}])
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=0: io.BytesIO(page))
+    url = "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
+    assert client.get("/api/playlists").status_code == 401
+    login(client)
+    pid = client.post("/api/playlist", json={"url": url}).json()["id"]
+    tracks = client.get(f"/api/playlists/{pid}").json()["tracks"]
+    tracks[0].update(state="found", match={"url": "https://x.y/a", "name": "A - Uno", "duration": 101})
+    tracks[1].update(state="found", sel=False)                              # «encontrada» sin coincidencia no es válida
+    assert client.put(f"/api/playlists/{pid}", json={"tracks": tracks + [{"title": ""}, "basura"]}).status_code == 200
+    saved = client.get(f"/api/playlists/{pid}").json()["tracks"]
+    tracks[0].update(state="queued", job="0123456789ab"); tracks[1].update(state="queued", job="no-es-un-id")
+    client.put(f"/api/playlists/{pid}", json={"tracks": tracks})
+    q = client.get(f"/api/playlists/{pid}").json()["tracks"]
+    assert (q[0]["state"], q[0]["job"], q[1]["job"]) == ("queued", "0123456789ab", "")   # el id del trabajo se valida
+    tracks[0].update(state="found", job=""); tracks[1].update(state="found", job="")
+    client.put(f"/api/playlists/{pid}", json={"tracks": tracks})
+    saved = client.get(f"/api/playlists/{pid}").json()["tracks"]
+    assert [t["state"] for t in saved] == ["found", "pending"] and saved[0]["match"]["url"] == "https://x.y/a" and saved[1]["sel"] is False
+    again = client.post("/api/playlist", json={"url": url}).json()           # volver a pegarla conserva el avance
+    assert again["id"] == pid and again["tracks"][0]["state"] == "found"
+    summary = [p for p in client.get("/api/playlists").json() if p["id"] == pid][0]
+    assert (summary["total"], summary["found"], summary["none"], summary["queued"]) == (2, 1, 0, 0)
+    auth.create_user("pl-otro@x.cl", "", "clave-larga-otro")
+    client.post("/api/auth/logout")
+    login(client, "pl-otro@x.cl", "clave-larga-otro")
+    assert client.get(f"/api/playlists/{pid}").status_code == 404           # privadas de cada usuario
+    assert client.put(f"/api/playlists/{pid}", json={"tracks": []}).status_code == 404
+    assert client.delete(f"/api/playlists/{pid}").status_code == 404
+    assert pid not in [p["id"] for p in client.get("/api/playlists").json()]
+    client.post("/api/auth/logout")
+    login(client)
+    assert client.delete(f"/api/playlists/{pid}").status_code == 200
+    assert client.get(f"/api/playlists/{pid}").status_code == 404

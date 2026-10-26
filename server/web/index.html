@@ -87,12 +87,25 @@
         <label for="search-q" class="sr-only">Canción o artista</label>
         <div class="combo"><input id="search-q" type="search" placeholder="Canción o artista" autocomplete="off" minlength="2" required role="combobox" aria-expanded="false" aria-controls="search-q-list" aria-autocomplete="list"><ul id="search-q-list" class="combo-list" role="listbox" hidden></ul></div>
         <label for="search-src" class="sr-only">Fuente</label>
-        <select id="search-src" aria-label="Fuente de búsqueda"><option value="soundcloud">SoundCloud</option><option value="youtube">YouTube</option></select>
+        <select id="search-src" aria-label="Fuente de búsqueda"><option value="soundcloud">SoundCloud</option><option value="youtube">YouTube</option><option value="mp3pm">MP3.pm</option></select>
         <button type="submit" id="search-btn" class="btn">Buscar</button>
       </form>
       <p id="search-msg" class="msg" role="status" aria-live="polite"></p>
       <ul id="search-results" class="results" aria-labelledby="search-h"></ul>
     </section>
+    <section class="card" aria-labelledby="pl-h">
+      <h2 id="pl-h">Playlist de Spotify</h2>
+      <form id="pl-form" class="search" novalidate>
+        <div><label for="pl-url" class="sr-only">Enlace de la playlist</label><input id="pl-url" type="url" placeholder="https://open.spotify.com/playlist/…" autocomplete="off" aria-describedby="pl-url-err"><p id="pl-url-err" class="field-err"></p></div>
+        <button type="submit" class="btn">Cargar playlist</button>
+      </form>
+      <p class="hint">Solo playlists públicas. «Generar todo» busca cada pista y solo genera las que coinciden en artista, título y duración.</p>
+    </section>
+    <details id="mypl" class="card fold" open>
+      <summary><h2 id="mypl-h">Mis playlists</h2></summary>
+      <p class="hint">Se guardan solas con el avance de cada pista. Las canciones generadas aparecen en «Canciones».</p>
+      <ul id="playlists" class="list"></ul>
+    </details>
     <section class="card" aria-labelledby="new-h">
       <h2 id="new-h">Nueva canción</h2>
       <form id="form" novalidate>
@@ -181,6 +194,34 @@
     </section>
   </div>
 </main>
+<dialog id="song-dialog" aria-labelledby="song-h">
+  <form id="song-form" method="dialog" novalidate>
+    <h2 id="song-h">Revise los datos de la canción</h2>
+    <p class="hint">La fuente no entregó datos limpios. Elija una sugerencia o escriba los datos a mano («Usar «…»»).</p>
+    <div class="combo"><label for="song-artist">Artista</label><input id="song-artist" type="text" maxlength="200" role="combobox" aria-expanded="false" aria-controls="song-artist-list" aria-autocomplete="list" autocomplete="off" aria-describedby="song-artist-err"><ul id="song-artist-list" class="combo-list" role="listbox" hidden></ul><p id="song-artist-err" class="field-err"></p></div>
+    <div class="combo"><label for="song-title">Título</label><input id="song-title" type="text" maxlength="200" role="combobox" aria-expanded="false" aria-controls="song-title-list" aria-autocomplete="list" autocomplete="off" aria-describedby="song-title-err"><ul id="song-title-list" class="combo-list" role="listbox" hidden></ul><p id="song-title-err" class="field-err"></p></div>
+    <div class="actions">
+      <button type="button" id="song-no" class="btn ghost">Cancelar</button>
+      <button type="submit" class="btn">Generar carta</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="pl-dialog" class="wide" aria-labelledby="pl-dialog-h">
+  <h2 id="pl-dialog-h">Playlist</h2>
+  <div class="row">
+    <div><label for="pl-src">Buscar en</label><select id="pl-src"><option value="soundcloud">SoundCloud</option><option value="youtube">YouTube</option><option value="mp3pm">MP3.pm</option></select></div>
+    <p id="pl-summary" class="hint end" role="status" aria-live="polite"></p>
+  </div>
+  <div class="actions"><button type="button" id="pl-selall" class="btn ghost"></button></div>
+  <ul id="pl-list" class="list pl-list"></ul>
+  <div class="actions">
+    <button type="button" id="pl-all" class="btn">Generar todo</button>
+    <button type="button" id="pl-search" class="btn ghost">Buscar coincidencias</button>
+    <button type="button" id="pl-gen" class="btn ghost" disabled>Generar encontradas</button>
+    <button type="button" id="pl-stop" class="btn ghost" hidden>Detener</button>
+    <button type="button" id="pl-close" class="btn ghost">Cerrar</button>
+  </div>
+</dialog>
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 <dialog id="confirm" aria-labelledby="confirm-h">
   <h2 id="confirm-h"></h2>
