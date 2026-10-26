@@ -446,3 +446,44 @@ def test_song_suggestions(client, monkeypatch):
     monkeypatch.setattr(suggest, "_get", lambda url: {"data": [{"title_short": "Re:Re:", "duration": 229, "artist": {"name": "ASIAN KUNG-FU GENERATION"}}]})
     r = client.get("/api/suggest", params={"kind": "song", "q": "rere"})
     assert r.json() == {"items": ["ASIAN KUNG-FU GENERATION - Re:Re:"], "meta": ["3:49"]}
+
+
+def test_share_between_users(client):
+    from app import auth, storage
+    a = auth.create_user("a-share@x.cl", "", "clave-larga-aaa")
+    b = auth.create_user("b-share@x.cl", "", "clave-larga-bbb")
+    jid = storage.create("file", "", "T", "Art", a)
+    d = storage.job_dir(jid) / "Art - T"
+    d.mkdir(parents=True)
+    (d / "song.ini").write_text("[song]\nname=T\n")
+    storage.update(jid, status="done", stage="listo", progress=100, folder="Art - T")
+    def shared():      # solo lo de estos dos usuarios: otros tests dejan canciones de otros dueños
+        return [x["id"] for x in client.get("/api/shared").json() if x["owner"] in ("a-share@x.cl", "b-share@x.cl")]
+    busy = storage.create("file", "", "En curso", "Art", a)          # sin terminar: nunca se comparte
+    login(client, "b-share@x.cl", "clave-larga-bbb")
+    assert shared() == [jid]      # compartir es lo predeterminado
+    assert client.get(f"/api/jobs/{jid}").status_code == 404                 # ver la lista no da acceso al detalle
+    assert client.post(f"/api/jobs/{busy}/clone").status_code == 404
+    r = client.post(f"/api/jobs/{jid}/clone")
+    assert r.status_code == 201 and r.json()["status"] == "done"
+    new = r.json()["id"]
+    assert (storage.job_dir(new) / "Art - T" / "song.ini").exists()
+    assert client.get(f"/api/jobs/{new}").status_code == 200                 # la copia es suya
+    assert jid in shared() and new not in shared()   # lo propio no aparece
+    client.post("/api/auth/logout")
+    login(client, "a-share@x.cl", "clave-larga-aaa")
+    assert shared() == [new]      # B comparte, así que A ve su copia
+    client.post("/api/auth/logout")
+    login(client, "b-share@x.cl", "clave-larga-bbb")
+    assert client.patch("/api/auth/share", json={"share": False}).json()["share"] is False
+    client.post("/api/auth/logout")
+    login(client, "a-share@x.cl", "clave-larga-aaa")
+    assert shared() == []                            # B dejó de compartir
+    assert client.patch("/api/auth/share", json={"share": False}).status_code == 200
+    client.post("/api/auth/logout")
+    login(client, "b-share@x.cl", "clave-larga-bbb")
+    assert shared() == []         # A dejó de compartir
+    assert client.post(f"/api/jobs/{jid}/clone").status_code == 404
+    client.post("/api/auth/logout")
+    login(client)
+    assert any(x["id"] == jid for x in client.get("/api/jobs").json())       # el admin ve todo

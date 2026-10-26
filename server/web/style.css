@@ -59,6 +59,9 @@ code { background:var(--raise); padding:1px 6px; border-radius:6px; font-size:.9
 .tab:hover { color:var(--fg); }
 .tab[aria-selected=true] { color:var(--ink); background:var(--accent); }
 
+.check { display:flex; align-items:center; gap:var(--s3); font-weight:600; min-height:44px; cursor:pointer; }
+.check input { width:24px; height:24px; accent-color:var(--accent); flex:none; }
+
 /* subir canción */
 .drop { display:grid; gap:var(--s1); text-align:center; padding:var(--s6) var(--s4); border:2px dashed var(--line-ui); border-radius:var(--r); cursor:pointer; margin-bottom:var(--s2); }
 .drop.over, .drop:hover { border-color:var(--accent); background:rgba(124,196,255,.08); }

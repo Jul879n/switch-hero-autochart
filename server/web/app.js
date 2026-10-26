@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const STAGES = { descarga: "Descargando", separacion: "Separando instrumentos", tempo: "Detectando tempo",
   transcripcion: "Transcribiendo notas", carta: "Generando carta", empaque: "Empaquetando", listo: "Listo", "": "En cola" };
 const STATUS = { queued: "En cola", running: "En proceso", done: "Terminada", error: "Con error" };
-let me = null, timer = null, file = null, lastJobs = "";
+let me = null, timer = null, file = null, lastJobs = "", lastShared = "";
 
 function el(tag, props = {}, ...kids) {
   const n = Object.assign(document.createElement(tag), props);
@@ -153,7 +153,7 @@ async function enter(user) {
   selectTab(!isAdmin && saved === "tab-admin" ? "tab-songs" : saved);
   if (!$("pair").hidden) selectTab("tab-switch");
   if (user.role === "admin") { loadUsers().catch(() => {}); loadCookies(); }
-  lastJobs = ""; refresh();
+  $("share-toggle").checked = user.share; lastJobs = ""; lastShared = ""; refresh();
   clearInterval(timer); timer = setInterval(refresh, 3000);
 }
 
@@ -488,8 +488,32 @@ async function refresh() {
     const list = await api("/api/jobs");
     const key = JSON.stringify(list);
     if (key !== lastJobs) { lastJobs = key; render(list); }     // no reconstruye si nada cambió (conserva el foco)
+    const shared = await api("/api/shared"), skey = JSON.stringify(shared);
+    if (skey !== lastShared) { lastShared = skey; renderShared(shared); }
   } catch { /* se reintenta en el siguiente ciclo */ }
 }
+
+/* ---------- canciones compartidas ---------- */
+function renderShared(list) {
+  const ul = $("shared"); ul.replaceChildren();
+  if (!list.length) { ul.append(el("li", { className: "empty", textContent: "Nadie ha compartido canciones todavía." })); return; }
+  for (const j of list) {
+    const add = el("button", { type: "button", className: "btn ghost", textContent: "Agregar a mi biblioteca" });
+    add.addEventListener("click", async () => {
+      try { await busy(add, () => post(`/api/jobs/${j.id}/clone`), "Agregando…"); toast("Canción agregada a su biblioteca."); lastJobs = ""; refresh(); }
+      catch (err) { toast(err.message, false); }
+    });
+    ul.append(el("li", { className: "item" },
+      el("h3", { textContent: `${j.artist || "—"} · ${j.title || "(sin título)"}` }),
+      el("span", { className: "hint", textContent: `De ${j.owner}` }),
+      el("div", { className: "actions" }, add)));
+  }
+}
+$("share-toggle").addEventListener("change", async (e) => {
+  const box = e.target;
+  try { const u = await send("PATCH", "/api/auth/share", { share: box.checked }); me = u; toast(u.share ? "Sus canciones son visibles para los demás." : "Sus canciones ya no se comparten."); }
+  catch (err) { box.checked = !box.checked; toast(err.message, false); }
+});
 
 async function saveToFolder(j, btn) {
   const label = btn.textContent;
