@@ -10,7 +10,7 @@
 <a class="skip" href="#main">Saltar al contenido</a>
 <header class="top">
   <h1>Switch Hero Autochart</h1>
-  <nav class="links" aria-label="Proyecto">
+  <nav id="proj-nav" class="links" aria-label="Proyecto" hidden>
     <a class="btn ghost" href="https://github.com/Jul879n/switch-hero-autochart/releases/latest/download/autochart-hero.nro">Descargar .nro</a>
     <a class="btn ghost" href="https://github.com/Jul879n/switch-hero-autochart" target="_blank" rel="noopener">Código (Jul879n)</a>
   </nav>
@@ -25,7 +25,7 @@
     <form id="login-form" class="card" novalidate>
       <h2>Iniciar sesión</h2>
       <label for="login-email">Correo</label>
-      <input id="login-email" type="email" autocomplete="username" required>
+      <input id="login-email" type="email" autocomplete="username" required aria-describedby="login-email-err"><p id="login-email-err" class="field-err"></p>
       <label for="login-pass">Contraseña</label>
       <div class="pass">
         <input id="login-pass" type="password" autocomplete="current-password" required>
@@ -34,14 +34,14 @@
       <button type="submit" class="btn">Entrar</button>
       <button type="button" id="to-recover" class="link">¿Olvidó su contraseña?</button>
       <p id="login-msg" class="msg" role="alert"></p>
-      <p class="hint">¿Sin cuenta? Solo el administrador puede invitarle.</p>
+      <p class="hint">¿Sin cuenta? Solo el administrador puede crearla; recibirá una contraseña temporal por correo.</p>
     </form>
 
     <form id="recover-form" class="card" hidden novalidate>
       <h2>Recuperar contraseña</h2>
       <p class="hint">Le enviaremos una contraseña temporal al correo de su cuenta.</p>
       <label for="rec-email">Correo</label>
-      <input id="rec-email" type="email" autocomplete="username" required>
+      <input id="rec-email" type="email" autocomplete="username" required aria-describedby="rec-email-err"><p id="rec-email-err" class="field-err"></p>
       <button type="submit" class="btn">Enviar contraseña temporal</button>
       <button type="button" id="to-login" class="link">Volver a iniciar sesión</button>
       <p id="rec-msg" class="msg" role="status" aria-live="polite"></p>
@@ -66,13 +66,19 @@
       <label for="chg-cur">Contraseña actual</label>
       <input id="chg-cur" type="password" autocomplete="current-password" required>
       <label for="chg-new">Contraseña nueva (mínimo 10 caracteres)</label>
-      <input id="chg-new" type="password" autocomplete="new-password" minlength="10" required>
+      <input id="chg-new" type="password" autocomplete="new-password" minlength="10" required aria-describedby="chg-new-err"><p id="chg-new-err" class="field-err"></p>
       <button type="submit" class="btn">Cambiar contraseña</button>
       <p id="chg-msg" class="msg" role="alert"></p>
     </form>
   </section>
 
   <div id="app" hidden>
+    <div class="tabs" role="tablist" aria-label="Secciones">
+      <button type="button" class="tab" role="tab" id="tab-songs" aria-controls="p-songs" aria-selected="true">Canciones</button>
+      <button type="button" class="tab" role="tab" id="tab-switch" aria-controls="p-switch" aria-selected="false" tabindex="-1">Switch</button>
+      <button type="button" class="tab" role="tab" id="tab-admin" aria-controls="admin" aria-selected="false" tabindex="-1" hidden>Administración</button>
+    </div>
+    <div id="p-songs" class="panel" role="tabpanel" aria-labelledby="tab-songs">
     <section class="card" aria-labelledby="search-h">
       <h2 id="search-h">Buscar canción</h2>
       <form id="search-form" class="row3 search" role="search">
@@ -105,6 +111,13 @@
       </form>
     </section>
 
+    <section aria-labelledby="songs-h">
+      <h2 id="songs-h">Canciones</h2>
+      <ul id="jobs" class="list"></ul>
+    </section>
+
+    </div>
+    <div id="p-switch" class="panel" role="tabpanel" aria-labelledby="tab-switch" hidden>
     <section id="pair" class="card" aria-labelledby="pair-h" hidden>
       <h2 id="pair-h">Vincular la Switch</h2>
       <p>La Switch muestra el código <strong id="pair-code"></strong>. Confirme que es la suya para vincularla a esta cuenta.</p>
@@ -132,24 +145,18 @@
       </form>
     </section>
 
-    <section aria-labelledby="songs-h">
-      <h2 id="songs-h">Canciones</h2>
-      <ul id="jobs" class="list"></ul>
-    </section>
-
-    <section id="admin" class="card" aria-labelledby="adm-h" hidden>
-      <h2 id="adm-h">Administración de usuarios</h2>
-      <form id="admin-invite" class="row" novalidate>
-        <div><label for="adm-email">Invitar por correo</label><input id="adm-email" type="email" required></div>
-        <div class="end"><button type="submit" class="btn">Enviar invitación</button></div>
+    </div>
+    <section id="admin" class="card panel" role="tabpanel" aria-labelledby="tab-admin" hidden>
+      <h2 id="adm-h">Usuarios</h2>
+      <form id="admin-create" class="row" novalidate>
+        <div><label for="adm-cemail">Correo</label><input id="adm-cemail" type="email" autocomplete="off" required aria-describedby="adm-cemail-err"><p id="adm-cemail-err" class="field-err"></p></div>
+        <div><label for="adm-cname">Nombre (opcional)</label><input id="adm-cname" type="text" maxlength="100" autocomplete="off"></div>
+        <div><label for="adm-crole">Rol</label><select id="adm-crole"><option value="user">Usuario</option><option value="admin">Administrador</option></select></div>
+        <div class="end"><button type="submit" class="btn">Crear y enviar contraseña temporal</button></div>
       </form>
-      <form id="admin-create" class="row3" novalidate>
-        <div><label for="adm-cemail">Crear usuario: correo</label><input id="adm-cemail" type="email" required></div>
-        <div><label for="adm-cpass">Contraseña inicial (10+)</label><input id="adm-cpass" type="password" minlength="10" autocomplete="new-password" required></div>
-        <div class="end"><button type="submit" class="btn">Crear usuario</button></div>
-      </form>
-      <p id="adm-msg" class="msg" role="status" aria-live="polite"></p>
+      <p class="hint">Se envía una contraseña temporal al correo; el administrador nunca la ve.</p>
       <ul id="users" class="list"></ul>
+      <p id="users-empty" class="empty" hidden>Aún no hay otros usuarios. Cree el primero arriba.</p>
       <h3>Cookies de YouTube</h3>
       <p class="hint">YouTube suele bloquear descargas desde el servidor. Cargue un <code>cookies.txt</code> (formato Netscape)
         exportado de un navegador con sesión de YouTube iniciada. En Safari (Mac):
@@ -165,6 +172,15 @@
     </section>
   </div>
 </main>
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+<dialog id="confirm" aria-labelledby="confirm-h">
+  <h2 id="confirm-h"></h2>
+  <p id="confirm-text"></p>
+  <div class="actions">
+    <button type="button" id="confirm-no" class="btn ghost">Cancelar</button>
+    <button type="button" id="confirm-yes" class="btn danger">Eliminar</button>
+  </div>
+</dialog>
 <script src="app.js"></script>
 </body>
 </html>

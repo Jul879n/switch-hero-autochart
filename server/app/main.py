@@ -132,6 +132,12 @@ async def login(request: Request, response: Response):
     return _me(auth.user_from_token(token))
 
 
+def _send_temp(to: str, temp: str) -> bool:
+    return mail.send(to, "Contraseña temporal de Switch Hero Autochart",
+                     f"Su contraseña temporal es:\n\n{temp}\n\nInicie sesión y el sistema le pedirá elegir una nueva.\n"
+                     "Si no lo solicitó, ignore este mensaje.\n")
+
+
 @app.post("/api/auth/recover")
 async def recover(request: Request):
     body = await request.json()
@@ -140,11 +146,7 @@ async def recover(request: Request):
     if not mail.configured():
         raise HTTPException(503, "El envío de correo no está configurado; pida al administrador una nueva contraseña")
 
-    def send(to: str, temp: str) -> bool:
-        return mail.send(to, "Contraseña temporal de Switch Hero Autochart",
-                         f"Su contraseña temporal es:\n\n{temp}\n\nInicie sesión y el sistema le pedirá elegir una nueva.\n"
-                         "Si no lo solicitó, ignore este mensaje.\n")
-    auth.recover_password(email, ip, send)
+    auth.recover_password(email, ip, _send_temp)
     return {"ok": True}
 
 
@@ -200,30 +202,41 @@ def admin_users(_: dict = Depends(auth.admin_user)):
     return auth.list_users()
 
 
-@app.post("/api/admin/invites", status_code=201)
-async def admin_invite(request: Request, _: dict = Depends(auth.admin_user)):
-    body = await request.json()
-    email = auth.norm_email(str(body.get("email", "")))
-    u = auth.user_by_email(email)
-    if u and u["pw_hash"]:
-        raise HTTPException(409, "Ese correo ya tiene cuenta")
-    link = f"{_base_url(request)}/?invite={auth.create_invite(email)}"
-    sent = mail.send(email, "Invitación a Switch Hero Autochart",
-                     f"Le invitaron a Switch Hero Autochart.\n\nCree su cuenta aquí (el enlace vence en 3 días):\n{link}\n")
-    return {"email": email, "emailed": sent, "link": link}
+def _require_mail() -> None:
+    if not mail.configured():
+        raise HTTPException(503, "El envío de correo no está configurado")
 
 
 @app.post("/api/admin/users", status_code=201)
 async def admin_create_user(request: Request, _: dict = Depends(auth.admin_user)):
     body = await request.json()
     email = auth.norm_email(str(body.get("email", "")))
-    password = str(body.get("password", ""))
-    auth.check_password(password)
     role = "admin" if body.get("role") == "admin" else "user"
     if auth.user_by_email(email):
         raise HTTPException(409, "Ese correo ya existe")
-    uid = auth.create_user(email, str(body.get("name", "")).strip()[:100], password, role)
+    _require_mail()
+    temp = auth.temp_password()
+    if not await run_in_threadpool(_send_temp, email, temp):
+        raise HTTPException(502, "No se pudo enviar el correo; no se creó el usuario")
+    uid = auth.create_user(email, str(body.get("name", "")).strip()[:100], "", role)
+    auth.set_password(uid, temp, must_change=True)
     return _me(auth.user_by_id(uid))
+
+
+@app.post("/api/admin/users/{uid}/reset")
+async def admin_reset_user(uid: int, admin: dict = Depends(auth.admin_user)):
+    u = auth.user_by_id(uid)
+    if not u:
+        raise HTTPException(404, "Usuario inexistente")
+    if uid == admin["id"]:
+        raise HTTPException(400, "No puede restablecerse a sí mismo")
+    _require_mail()
+    temp = auth.temp_password()
+    if not await run_in_threadpool(_send_temp, u["email"], temp):
+        raise HTTPException(502, "No se pudo enviar el correo; la contraseña no cambió")
+    auth.set_password(uid, temp, must_change=True)
+    auth.revoke_user_sessions(uid)
+    return {"ok": True}
 
 
 @app.patch("/api/admin/users/{uid}")

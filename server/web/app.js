@@ -12,6 +12,51 @@ function el(tag, props = {}, ...kids) {
 }
 function say(id, text, ok) { const m = $(id); m.textContent = text; m.classList.toggle("ok", !!ok); }
 
+function toast(text, ok = true) {
+  const t = el("p", { className: ok ? "toast" : "toast err", textContent: text });
+  $("toasts").append(t); setTimeout(() => t.remove(), ok ? 5000 : 8000);
+}
+/* Deshabilita el botón y muestra «Enviando…» mientras dura la petición. */
+async function busy(btn, fn, label = "Enviando…") {
+  const prev = btn.textContent; btn.disabled = true; btn.textContent = label;
+  try { return await fn(); } finally { btn.disabled = false; btn.textContent = prev; }
+}
+function fieldErr(input, text) {
+  $(`${input.id}-err`).textContent = text || "";
+  input.toggleAttribute("aria-invalid", !!text); if (text) input.setAttribute("aria-invalid", "true");
+  return !text;
+}
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const checkEmail = (i) => fieldErr(i, EMAIL_RE.test(i.value.trim()) ? "" : "Ingrese un correo válido.");
+function confirmDialog(title, text, yes = "Eliminar") {
+  $("confirm-h").textContent = title; $("confirm-text").textContent = text; $("confirm-yes").textContent = yes;
+  const d = $("confirm");
+  return new Promise((res) => {
+    const done = (v) => { d.close(); $("confirm-yes").onclick = $("confirm-no").onclick = d.onclose = null; res(v); };
+    $("confirm-yes").onclick = () => done(true); $("confirm-no").onclick = () => done(false);
+    d.onclose = () => res(false);
+    d.showModal(); $("confirm-no").focus();
+  });
+}
+
+/* ---------- pestañas ---------- */
+const TABS = [["tab-songs", "p-songs"], ["tab-switch", "p-switch"], ["tab-admin", "admin"]];
+function selectTab(id, focus) {
+  for (const [t, p] of TABS) {
+    const on = t === id;
+    $(t).setAttribute("aria-selected", String(on)); $(t).tabIndex = on ? 0 : -1; $(p).hidden = !on;
+  }
+  if (focus) $(id).focus();
+  try { localStorage.setItem("tab", id); } catch {}
+}
+$("tab-songs").parentElement.addEventListener("keydown", (e) => {
+  const ids = TABS.map(([t]) => t).filter((t) => !$(t).hidden), i = ids.indexOf(document.activeElement.id);
+  if (i < 0) return;
+  const to = { ArrowRight: ids[(i + 1) % ids.length], ArrowLeft: ids[(i - 1 + ids.length) % ids.length], Home: ids[0], End: ids[ids.length - 1] }[e.key];
+  if (to) { e.preventDefault(); selectTab(to, true); }
+});
+TABS.forEach(([t]) => $(t).addEventListener("click", () => selectTab(t)));
+
 async function api(path, opts = {}) {
   const r = await fetch(path, { credentials: "same-origin", ...opts });
   const body = await r.json().catch(() => ({}));
@@ -74,6 +119,7 @@ function combo(input, kind, extra) {
 /* ---------- vistas ---------- */
 function show(view) {
   for (const id of ["auth", "change", "app", "bar"]) $(id).hidden = id !== view && !(id === "bar" && view !== "auth");
+  $("proj-nav").hidden = view !== "app";
   if (view === "auth") clearInterval(timer);
 }
 function authForm(which) {
@@ -90,7 +136,10 @@ async function enter(user) {
   $("who").textContent = `${user.email}${user.role === "admin" ? " · administrador" : ""}`;
   if (user.must_change) { show("change"); $("chg-cur").focus(); return; }
   show("app");
-  $("admin").hidden = user.role !== "admin";
+  $("tab-admin").hidden = !isAdmin;
+  let saved = "tab-songs"; try { saved = localStorage.getItem("tab") || saved; } catch {}
+  selectTab(!isAdmin && saved === "tab-admin" ? "tab-songs" : saved);
+  if (!$("pair").hidden) selectTab("tab-switch");
   if (user.role === "admin") { loadUsers().catch(() => {}); loadCookies(); }
   lastJobs = ""; refresh();
   clearInterval(timer); timer = setInterval(refresh, 3000);
@@ -99,8 +148,9 @@ async function enter(user) {
 /* ---------- autenticación ---------- */
 $("login-form").addEventListener("submit", async (e) => {
   e.preventDefault(); say("login-msg", "");
+  if (!checkEmail($("login-email"))) return $("login-email").focus();
   try {
-    const u = await post("/api/auth/login", { email: $("login-email").value, password: $("login-pass").value });
+    const u = await busy(e.submitter, () => post("/api/auth/login", { email: $("login-email").value, password: $("login-pass").value }), "Entrando…");
     $("login-pass").value = ""; enter(u);
   } catch (err) { say("login-msg", err.message); }
 });
@@ -108,8 +158,9 @@ $("to-recover").addEventListener("click", () => { $("rec-email").value = $("logi
 $("to-login").addEventListener("click", () => authForm("login-form"));
 $("recover-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (!checkEmail($("rec-email"))) return $("rec-email").focus();
   try {
-    await post("/api/auth/recover", { email: $("rec-email").value });
+    await busy(e.submitter, () => post("/api/auth/recover", { email: $("rec-email").value }));
     say("rec-msg", "Si el correo existe, recibirá una contraseña temporal en unos minutos.", true);
   } catch (err) { say("rec-msg", err.message); }
 });
@@ -120,8 +171,9 @@ document.querySelectorAll(".toggle").forEach((b) => b.addEventListener("click", 
 }));
 $("change-form").addEventListener("submit", async (e) => {
   e.preventDefault(); say("chg-msg", "");
+  if (!fieldErr($("chg-new"), $("chg-new").value.length >= 10 ? "" : "Use al menos 10 caracteres.")) return $("chg-new").focus();
   try {
-    const u = await post("/api/auth/password", { current: $("chg-cur").value, new: $("chg-new").value });
+    const u = await busy(e.submitter, () => post("/api/auth/password", { current: $("chg-cur").value, new: $("chg-new").value }));
     e.target.reset(); enter(u);
   } catch (err) { say("chg-msg", err.message); }
 });
@@ -129,7 +181,7 @@ const inviteToken = new URLSearchParams(location.search).get("invite");
 $("invite-form").addEventListener("submit", async (e) => {
   e.preventDefault(); say("invite-msg", "");
   try {
-    await post(`/api/auth/invite/${encodeURIComponent(inviteToken)}`, { name: $("invite-name").value, password: $("invite-pass").value });
+    await busy(e.submitter, () => post(`/api/auth/invite/${encodeURIComponent(inviteToken)}`, { name: $("invite-name").value, password: $("invite-pass").value }));
     history.replaceState(null, "", "/"); showAuth(); say("login-msg", "Cuenta creada. Inicie sesión.", true);
   } catch (err) { say("invite-msg", err.message); }
 });
@@ -137,31 +189,46 @@ $("invite-form").addEventListener("submit", async (e) => {
 /* ---------- administración ---------- */
 async function loadUsers() {
   const ul = $("users"); ul.replaceChildren();
-  for (const u of await api("/api/admin/users")) {
-    const state = [u.role === "admin" ? "administrador" : "usuario", u.active ? "" : "desactivado", u.has_password ? "" : "invitación pendiente"].filter(Boolean).join(" · ");
-    const li = el("li", { className: "user" }, el("span", { textContent: `${u.email} — ${state}` }));
+  const users = await api("/api/admin/users");
+  $("users-empty").hidden = users.length > 1;
+  const act = (btn, fn, okMsg) => btn.addEventListener("click", async () => {
+    try { await busy(btn, fn, "…"); toast(okMsg); } catch (err) { toast(err.message, false); }
+    loadUsers();
+  });
+  for (const u of users) {
+    const chips = el("div", { className: "chips" },
+      el("span", { className: "chip", textContent: u.role === "admin" ? "administrador" : "usuario" }),
+      el("span", { className: u.active ? "chip ok" : "chip off", textContent: u.active ? "activo" : "desactivado" }));
+    if (u.must_change) chips.append(el("span", { className: "chip warn", textContent: "debe cambiar contraseña" }));
+    else if (!u.has_password) chips.append(el("span", { className: "chip warn", textContent: "invitación pendiente" }));
+    const li = el("li", { className: "user" }, el("strong", { textContent: u.email }));
+    if (u.name) li.append(el("span", { className: "hint", textContent: u.name }));
+    li.append(chips);
     if (u.id !== me.id) {
-      const tog = el("button", { type: "button", className: "btn ghost", textContent: u.active ? "Desactivar" : "Activar" });
-      tog.addEventListener("click", async () => { await send("PATCH", `/api/admin/users/${u.id}`, { active: !u.active }).catch((e) => say("adm-msg", e.message)); loadUsers(); });
-      const del = el("button", { type: "button", className: "btn danger", textContent: "Eliminar" });
-      del.addEventListener("click", async () => { if (confirm(`¿Eliminar a ${u.email}?`)) { await send("DELETE", `/api/admin/users/${u.id}`).catch((e) => say("adm-msg", e.message)); loadUsers(); } });
-      li.append(el("span", { className: "actions" }, tog, del));
+      const mk = (cls, text) => el("button", { type: "button", className: `btn ${cls}`, textContent: text });
+      const rst = mk("ghost", "Reenviar contraseña"), rol = mk("ghost", u.role === "admin" ? "Hacer usuario" : "Hacer administrador");
+      const tog = mk("ghost", u.active ? "Desactivar" : "Activar"), del = mk("danger", "Eliminar");
+      act(rst, () => send("POST", `/api/admin/users/${u.id}/reset`), `Contraseña temporal enviada a ${u.email}.`);
+      act(rol, () => send("PATCH", `/api/admin/users/${u.id}`, { role: u.role === "admin" ? "user" : "admin" }), "Rol actualizado.");
+      act(tog, () => send("PATCH", `/api/admin/users/${u.id}`, { active: !u.active }), u.active ? "Usuario desactivado." : "Usuario activado.");
+      del.addEventListener("click", async () => {
+        if (!await confirmDialog(`¿Eliminar a ${u.email}?`, "Se borrarán su acceso y sus sesiones. No se puede deshacer.")) return;
+        try { await send("DELETE", `/api/admin/users/${u.id}`); toast("Usuario eliminado."); } catch (err) { toast(err.message, false); }
+        loadUsers();
+      });
+      li.append(el("div", { className: "actions" }, rst, rol, tog, del));
     }
     ul.append(li);
   }
 }
-$("admin-invite").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  try {
-    const r = await post("/api/admin/invites", { email: $("adm-email").value });
-    say("adm-msg", r.emailed ? `Invitación enviada a ${r.email}.` : `No se pudo enviar el correo. Enlace para compartir: ${r.link}`, r.emailed);
-    $("adm-email").value = ""; loadUsers();
-  } catch (err) { say("adm-msg", err.message); }
-});
+$("adm-cemail").addEventListener("input", () => fieldErr($("adm-cemail"), ""));
 $("admin-create").addEventListener("submit", async (e) => {
   e.preventDefault();
-  try { await post("/api/admin/users", { email: $("adm-cemail").value, password: $("adm-cpass").value }); say("adm-msg", "Usuario creado.", true); e.target.reset(); loadUsers(); }
-  catch (err) { say("adm-msg", err.message); }
+  if (!checkEmail($("adm-cemail"))) return $("adm-cemail").focus();
+  try {
+    await busy(e.submitter, () => post("/api/admin/users", { email: $("adm-cemail").value, name: $("adm-cname").value, role: $("adm-crole").value }));
+    toast(`Usuario creado; contraseña temporal enviada a ${$("adm-cemail").value.trim()}.`); e.target.reset(); loadUsers();
+  } catch (err) { toast(err.message, false); }
 });
 
 /* ---------- nueva canción ---------- */

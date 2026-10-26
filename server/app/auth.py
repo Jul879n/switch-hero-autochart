@@ -64,7 +64,7 @@ def user_by_id(uid: int):
 
 
 def list_users() -> list:
-    rows = storage._q("SELECT id,email,name,role,active,created_at,(pw_hash!='') AS has_password "
+    rows = storage._q("SELECT id,email,name,role,active,created_at,must_change,(pw_hash!='') AS has_password "
                       "FROM users ORDER BY id").fetchall()
     return [dict(r) for r in rows]
 
@@ -96,6 +96,10 @@ def set_password(uid: int, pw: str, must_change: bool = False) -> None:
 _recover: dict = defaultdict(list)
 
 
+def temp_password() -> str:
+    return secrets.token_urlsafe(9)
+
+
 def recover_password(email: str, ip: str, send) -> None:
     """Envía una contraseña temporal. No revela si el correo existe y no cambia nada si el envío falla."""
     now = time.time()
@@ -107,7 +111,7 @@ def recover_password(email: str, ip: str, send) -> None:
     u = user_by_email(email)
     if not u or not u["active"]:
         return
-    temp = secrets.token_urlsafe(9)
+    temp = temp_password()
     if send(u["email"], temp):
         set_password(u["id"], temp, must_change=True)
 

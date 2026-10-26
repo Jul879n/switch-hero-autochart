@@ -44,23 +44,61 @@ def test_validation(client):
     assert client.get("/api/jobs/zzzz").status_code == 404
 
 
-def test_only_admin_manages_users(client):
+def _mail_ok(monkeypatch, ok=True):
+    from app import mail
+    sent = {}
+    monkeypatch.setattr(mail, "configured", lambda: True)
+    monkeypatch.setattr(mail, "send", lambda to, subj, body: sent.update(to=to, body=body) or ok)
+    return sent
+
+
+def test_only_admin_manages_users(client, monkeypatch):
+    sent = _mail_ok(monkeypatch)
     login(client)
     r = client.post("/api/admin/users", json={"email": "u@x.cl", "password": "una-clave-larga"})
-    assert r.status_code == 201
-    inv = client.post("/api/admin/invites", json={"email": "n@x.cl"})
-    assert inv.status_code == 201 and inv.json()["emailed"] is False
-    token = inv.json()["link"].split("invite=")[1]
+    assert r.status_code == 201 and "password" not in r.text and "pw_hash" not in r.text
+    temp = sent["body"].split("\n\n")[1]
+    assert login(client, "iso@x.cl", "una-clave-larga").status_code == 401   # el campo password se ignora
     client.post("/api/auth/logout")
-    assert client.post(f"/api/auth/invite/{token}", json={"name": "N", "password": "otra-clave-larga"}).status_code == 200
-    assert client.post(f"/api/auth/invite/{token}", json={"name": "N", "password": "otra-clave-larga"}).status_code == 400
-    assert login(client, "n@x.cl", "otra-clave-larga").status_code == 200
-    assert client.post("/api/admin/invites", json={"email": "z@x.cl"}).status_code == 403
-    assert client.post("/api/admin/users", json={"email": "z@x.cl", "password": "una-clave-larga"}).status_code == 403
+    r = login(client, "u@x.cl", temp)
+    assert r.status_code == 200 and r.json()["must_change"] is True
+    assert client.post("/api/auth/password", json={"current": temp, "new": "clave-definitiva-1"}).status_code == 200
+    client.post("/api/auth/logout")
+    assert client.post("/api/admin/users", json={"email": "z@x.cl"}).status_code == 401
+    login(client, "u@x.cl", "clave-definitiva-1")
+    assert client.post("/api/admin/users", json={"email": "z@x.cl"}).status_code == 403
+    assert client.post("/api/admin/users/1/reset").status_code == 403
     assert client.get("/api/admin/users").status_code == 403
 
 
+def test_create_user_mail_failures(client, monkeypatch):
+    from app import auth, mail
+    login(client)
+    monkeypatch.setattr(mail, "configured", lambda: False)
+    assert client.post("/api/admin/users", json={"email": "f@x.cl"}).status_code == 503
+    _mail_ok(monkeypatch, ok=False)
+    assert client.post("/api/admin/users", json={"email": "f@x.cl"}).status_code == 502
+    assert auth.user_by_email("f@x.cl") is None
+
+
+def test_admin_reset_user(client, monkeypatch):
+    from app import auth
+    sent = _mail_ok(monkeypatch)
+    login(client)
+    uid = client.post("/api/admin/users", json={"email": "q@x.cl"}).json()["id"]
+    old = auth.user_by_id(uid)["pw_hash"]
+    _mail_ok(monkeypatch, ok=False)
+    assert client.post(f"/api/admin/users/{uid}/reset").status_code == 502
+    assert auth.user_by_id(uid)["pw_hash"] == old
+    sent = _mail_ok(monkeypatch)
+    assert client.post(f"/api/admin/users/{uid}/reset").status_code == 200
+    assert auth.user_by_id(uid)["pw_hash"] != old and sent["to"] == "q@x.cl"
+    assert client.post("/api/admin/users/99999/reset").status_code == 404
+
+
 def test_create_list_delete_and_isolation(client):
+    from app import auth
+    auth.create_user("iso@x.cl", "", "una-clave-larga")
     login(client)
     r = client.post("/api/jobs", files={"file": ("a.mp3", b"abc")}, data={"title": "T"})
     assert r.status_code == 201
@@ -69,7 +107,7 @@ def test_create_list_delete_and_isolation(client):
     assert client.get("/api/switch/songs").json() == []
     assert client.get(f"/api/switch/songs/{jid}/..%2Fx").status_code == 404
     client.post("/api/auth/logout")
-    login(client, "u@x.cl", "una-clave-larga")
+    login(client, "iso@x.cl", "una-clave-larga")
     assert client.get(f"/api/jobs/{jid}").status_code == 404      # no ve trabajos ajenos
     client.post("/api/auth/logout")
     login(client)
@@ -88,7 +126,7 @@ def test_recover_and_change_password(client, monkeypatch):
     monkeypatch.setattr(mail, "configured", lambda: True)
     monkeypatch.setattr(mail, "send", lambda to, subj, body: sent.update(to=to, body=body) or True)
     login(client)
-    client.post("/api/admin/users", json={"email": "r@x.cl", "password": "clave-original-1"})
+    auth.create_user("r@x.cl", "", "clave-original-1")
     client.post("/api/auth/logout")
     assert client.post("/api/auth/recover", json={"email": "nadie@x.cl"}).status_code == 200
     assert not sent                                          # no revela ni envía a desconocidos
@@ -104,11 +142,11 @@ def test_recover_and_change_password(client, monkeypatch):
 
 
 def test_recover_fails_safe_when_send_fails(client, monkeypatch):
-    from app import mail
+    from app import auth, mail
     monkeypatch.setattr(mail, "configured", lambda: True)
     monkeypatch.setattr(mail, "send", lambda *a: False)
     login(client)
-    client.post("/api/admin/users", json={"email": "s@x.cl", "password": "clave-original-1"})
+    auth.create_user("s@x.cl", "", "clave-original-1")
     client.post("/api/auth/logout")
     client.post("/api/auth/recover", json={"email": "s@x.cl"})
     assert login(client, "s@x.cl", "clave-original-1").status_code == 200   # no quedó bloqueado
@@ -123,12 +161,12 @@ def test_security_headers_and_csrf(client):
 
 
 def test_must_change_blocks_api(client, monkeypatch):
-    from app import mail
+    from app import auth, mail
     monkeypatch.setattr(mail, "configured", lambda: True)
     sent = {}
     monkeypatch.setattr(mail, "send", lambda to, s, b: sent.update(b=b) or True)
     login(client)
-    client.post("/api/admin/users", json={"email": "m@x.cl", "password": "clave-original-1"})
+    auth.create_user("m@x.cl", "", "clave-original-1")
     client.post("/api/auth/logout")
     client.post("/api/auth/recover", json={"email": "m@x.cl"})
     login(client, "m@x.cl", sent["b"].split("\n\n")[1])
