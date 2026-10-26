@@ -39,13 +39,23 @@ function confirmDialog(title, text, yes = "Eliminar") {
   });
 }
 
+/* View Transitions: anima el cambio de DOM si el navegador lo soporta y el usuario no pidió menos movimiento. */
+function transition(update) {
+  if (!document.startViewTransition || matchMedia("(prefers-reduced-motion: reduce)").matches) { update(); return Promise.resolve(); }
+  const vt = document.startViewTransition(update);   // el callback corre de forma asíncrona
+  vt.ready.catch(() => {}); vt.finished.catch(() => {});   // una transición interrumpida por otra rechaza con AbortError
+  return vt.updateCallbackDone;
+}
+
 /* ---------- pestañas ---------- */
 const TABS = [["tab-songs", "p-songs"], ["tab-switch", "p-switch"], ["tab-admin", "admin"]];
 function selectTab(id, focus) {
-  for (const [t, p] of TABS) {
-    const on = t === id;
-    $(t).setAttribute("aria-selected", String(on)); $(t).tabIndex = on ? 0 : -1; $(p).hidden = !on;
-  }
+  transition(() => {
+    for (const [t, p] of TABS) {
+      const on = t === id;
+      $(t).setAttribute("aria-selected", String(on)); $(t).tabIndex = on ? 0 : -1; $(p).hidden = !on;
+    }
+  });
   if (focus) $(id).focus();
   try { localStorage.setItem("tab", id); } catch {}
 }
@@ -118,24 +128,26 @@ function combo(input, kind, extra) {
 
 /* ---------- vistas ---------- */
 function show(view) {
-  for (const id of ["auth", "change", "app", "bar"]) $(id).hidden = id !== view && !(id === "bar" && view !== "auth");
-  $("proj-nav").hidden = view !== "app";
+  const done = transition(() => {
+    for (const id of ["auth", "change", "app", "bar"]) $(id).hidden = id !== view && !(id === "bar" && view !== "auth");
+    $("proj-nav").hidden = view !== "app";
+  });
   if (view === "auth") clearInterval(timer);
+  return done;
 }
 function authForm(which) {
-  for (const id of ["login-form", "recover-form", "invite-form"]) $(id).hidden = id !== which;
-  const f = $(which).querySelector("input");
-  if (f) f.focus();
+  transition(() => { for (const id of ["login-form", "recover-form", "invite-form"]) $(id).hidden = id !== which; })
+    .then(() => { const f = $(which).querySelector("input"); if (f) f.focus(); });
 }
-function showAuth(form = "login-form") { me = null; show("auth"); authForm(form); }
+function showAuth(form = "login-form") { me = null; show("auth").then(() => authForm(form)); }
 
 let isAdmin = false;
 async function enter(user) {
   me = user;
   isAdmin = user.role === "admin";
   $("who").textContent = `${user.email}${user.role === "admin" ? " · administrador" : ""}`;
-  if (user.must_change) { show("change"); $("chg-cur").focus(); return; }
-  show("app");
+  if (user.must_change) { await show("change"); $("chg-cur").focus(); return; }
+  await show("app");
   $("tab-admin").hidden = !isAdmin;
   let saved = "tab-songs"; try { saved = localStorage.getItem("tab") || saved; } catch {}
   selectTab(!isAdmin && saved === "tab-admin" ? "tab-songs" : saved);
