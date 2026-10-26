@@ -118,7 +118,7 @@ def _secure(request: Request) -> bool:
 
 def _me(u: dict) -> dict:
     return {"id": u["id"], "email": u["email"], "name": u["name"], "role": u["role"],
-            "must_change": bool(u.get("must_change"))}
+            "must_change": bool(u.get("must_change")), "share": bool(u.get("share", 1))}
 
 
 # ---------- sesión ----------
@@ -174,6 +174,13 @@ def logout(request: Request, response: Response):
         auth.logout(t)
     response.delete_cookie(auth.COOKIE)
     return {"ok": True}
+
+
+@app.patch("/api/auth/share")
+async def set_share(request: Request, u: dict = Depends(auth.current_user)):
+    body = await request.json()
+    storage._q("UPDATE users SET share=? WHERE id=?", (1 if body.get("share") else 0, u["id"]))
+    return _me(auth.user_by_id(u["id"]))
 
 
 @app.get("/api/auth/me")
@@ -305,6 +312,39 @@ async def create_job(file: UploadFile | None = File(None), url: str = Form(""),
         storage.update(jid, src=str(dest))
     jobs.kick()
     return _public(storage.get(jid))
+
+
+def _shared_job_or_404(jid: str, user: dict) -> dict:
+    """Canción terminada de otro usuario que comparte; 404 si no existe o su dueño no comparte."""
+    j = _job_or_404(jid)
+    owner = auth.user_by_id(j["user_id"])
+    if j["status"] != "done" or j["user_id"] == user["id"] or not owner or not owner["share"] or not owner["active"]:
+        raise HTTPException(404, "Trabajo inexistente")
+    return j
+
+
+@app.get("/api/shared")
+def list_shared(user: dict = Depends(auth.current_user)):
+    """Canciones terminadas de usuarios que eligieron compartir (las propias no aparecen)."""
+    owners = {u["id"]: u for u in auth.list_users() if u["share"] and u["active"] and u["id"] != user["id"]}
+    return [{**_public(j), "owner": owners[j["user_id"]]["name"] or owners[j["user_id"]]["email"]}
+            for j in storage.list_jobs("done") if j["user_id"] in owners]
+
+
+@app.post("/api/jobs/{jid}/clone", status_code=201)
+def clone_job(jid: str, user: dict = Depends(auth.current_user)):
+    """Copia una canción compartida a la biblioteca de quien la pide, sin reconvertir."""
+    j = _shared_job_or_404(jid, user)
+    src = storage.job_dir(jid)
+    new = storage.create(j["src_kind"], j["src"], j["title"], j["artist"], user["id"])
+    try:
+        shutil.copytree(src, storage.job_dir(new), dirs_exist_ok=True)
+    except OSError:
+        shutil.rmtree(storage.job_dir(new), ignore_errors=True)
+        storage.delete(new)
+        raise HTTPException(500, "No se pudo copiar la canción")
+    storage.update(new, status="done", stage="listo", progress=100, folder=j["folder"])
+    return _public(storage.get(new))
 
 
 @app.get("/api/jobs")

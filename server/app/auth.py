@@ -64,7 +64,7 @@ def user_by_id(uid: int):
 
 
 def list_users() -> list:
-    rows = storage._q("SELECT id,email,name,role,active,created_at,must_change,(pw_hash!='') AS has_password "
+    rows = storage._q("SELECT id,email,name,role,active,created_at,must_change,share,(pw_hash!='') AS has_password "
                       "FROM users ORDER BY id").fetchall()
     return [dict(r) for r in rows]
 
