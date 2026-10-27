@@ -1,0 +1,19 @@
+services:
+  app:
+    build: { context: ., dockerfile: Dockerfile }
+    image: switchhero:local
+    restart: unless-stopped
+    mem_limit: 8g
+    cap_drop: [ ALL ]
+    security_opt: [ "no-new-privileges:true" ]
+    env_file: .env
+    volumes: [ "switchhero-data:/data" ]
+    ports: [ "127.0.0.1:18104:8000" ]
+    labels:
+      cf.tunnel.enable: "true"
+      cf.tunnel.hostname: switchhero.jarayacontreras.cl
+      cf.tunnel.service: http://127.0.0.1:18104
+volumes:
+  switchhero-data:
+    name: switchhero_switchhero-data    # volumen existente: los datos se conservan al pasar a Komodo
+networks: { default: { ipam: { config: [ { subnet: 10.201.4.0/24 } ] } } }
