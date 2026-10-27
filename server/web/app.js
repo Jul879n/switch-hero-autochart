@@ -376,19 +376,23 @@ async function plRun(work) {
 }
 const gate = { last: 0 };      // máx. 10 búsquedas por minuto (límite del servidor)
 async function plSearchTrack(t) {
-  while (!pl.stop) {
+  const first = $("pl-src").value;               // fuente preferida; si no hay coincidencia exacta, se prueban las demás
+  const sources = [first, ...[...$("pl-src").options].map((o) => o.value).filter((v) => v !== first)];
+  for (let i = 0; i < sources.length && !pl.stop;) {
     await plWait(Math.max(0, 6500 - (Date.now() - gate.last)));
     if (pl.stop) return;
     gate.last = Date.now(); t.state = "searching"; t.msg = ""; plRender();
     try {
-      const r = await post("/api/match", { artist: t.artist, title: t.title, duration: t.duration, source: $("pl-src").value });
-      t.match = r.match; t.state = r.match ? "found" : "none"; plRender(); return;
+      const r = await post("/api/match", { artist: t.artist, title: t.title, duration: t.duration, source: sources[i] });
+      if (r.match) { t.match = r.match; t.state = "found"; plRender(); return; }
+      i++;
     } catch (err) {
       t.state = "pending"; t.msg = err.message; plRender();
-      if (!/Demasiadas/.test(err.message)) { pl.stop = true; return; }
-      await plWait(20000);                       // límite: espera y reintenta la misma pista
+      if (/Demasiadas/.test(err.message)) { await plWait(20000); continue; }   // límite: espera y reintenta en la misma fuente
+      if (++i >= sources.length) { pl.stop = true; return; }                    // fuente caída: pasa a la siguiente
     }
   }
+  if (!pl.stop) { t.match = null; t.state = "none"; t.msg = ""; plRender(); }
 }
 async function plGenTrack(t) {
   while (!pl.stop) {

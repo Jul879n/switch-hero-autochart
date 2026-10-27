@@ -539,7 +539,7 @@ def delete_playlist(pid: int, user: dict = Depends(auth.current_user)):
 
 @app.post("/api/match")
 async def match_track(request: Request, user: dict = Depends(auth.current_user)):
-    """Mejor coincidencia de una pista (artista, título, duración) en la fuente elegida; `null` si no hay."""
+    """Coincidencia exacta de una pista (todos los tokens, duración a ±5 s) en la fuente elegida; `null` si no hay."""
     body = await request.json()
     artist, title = str(body.get("artist", "")).strip()[:200], str(body.get("title", "")).strip()[:200]
     if not title:
@@ -549,7 +549,7 @@ async def match_track(request: Request, user: dict = Depends(auth.current_user))
     except (TypeError, ValueError):
         duration = 0
     items = await run_in_threadpool(_search_cached, f"{artist} {title}", str(body.get("source", "soundcloud")), user)
-    return {"match": jobs.best_match(items, artist, title, duration)}
+    return {"match": jobs.best_match(items, artist, title, duration, exact=True)}
 
 
 SP_STATE_TTL = 600

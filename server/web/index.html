@@ -99,7 +99,7 @@
         <div><label for="pl-url" class="sr-only">Enlace de la playlist</label><input id="pl-url" type="url" placeholder="https://open.spotify.com/playlist/…" autocomplete="off" aria-describedby="pl-url-err"><p id="pl-url-err" class="field-err"></p></div>
         <button type="submit" class="btn">Cargar playlist</button>
       </form>
-      <p class="hint">Pegue el enlace de una playlist pública o conecte su cuenta de Spotify para elegir entre las suyas, incluidas las privadas. «Generar todo» busca cada pista y solo genera las que coinciden en artista, título y duración.</p>
+      <p class="hint">Pegue el enlace de una playlist pública o conecte su cuenta de Spotify para elegir entre las suyas, incluidas las privadas. «Generar todo» busca cada pista y solo genera las que coinciden exactamente en artista, título y duración (±5 s). Si no la encuentra en la fuente elegida, prueba las otras dos.</p>
       <div id="sp-box" hidden>
         <div id="sp-off" class="actions"><button type="button" id="sp-connect" class="btn ghost">Conectar Spotify</button></div>
         <div id="sp-on" hidden>
@@ -216,7 +216,7 @@
 <dialog id="pl-dialog" class="wide" aria-labelledby="pl-dialog-h">
   <h2 id="pl-dialog-h">Playlist</h2>
   <div class="row">
-    <div><label for="pl-src">Buscar en</label><select id="pl-src"><option value="soundcloud">SoundCloud</option><option value="youtube">YouTube</option><option value="mp3pm">MP3.pm</option></select></div>
+    <div><label for="pl-src">Buscar primero en</label><select id="pl-src"><option value="soundcloud">SoundCloud</option><option value="youtube">YouTube</option><option value="mp3pm">MP3.pm</option></select></div>
     <p id="pl-summary" class="hint end" role="status" aria-live="polite"></p>
   </div>
   <div class="actions"><button type="button" id="pl-selall" class="btn ghost"></button></div>

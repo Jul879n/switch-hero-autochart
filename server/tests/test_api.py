@@ -557,6 +557,8 @@ def test_match_endpoint(client, monkeypatch):
     r = client.post("/api/match", json={"artist": "Banda Uno", "title": "Tema Uno", "duration": 200, "source": "soundcloud"})
     assert r.status_code == 200 and r.json()["match"]["url"] == "https://x.y/a" and calls == [("Banda Uno Tema Uno", "soundcloud")]
     assert client.post("/api/match", json={"artist": "Banda Uno", "title": "Tema Uno", "duration": 90, "source": "soundcloud"}).json() == {"match": None}
+    assert client.post("/api/match", json={"artist": "Banda Uno", "title": "Tema Uno", "duration": 207, "source": "soundcloud"}).json() == {"match": None}   # fuera de ±5 s
+    assert client.post("/api/match", json={"artist": "Banda Uno", "title": "Tema Uno", "duration": 0, "source": "soundcloud"}).json() == {"match": None}
     assert client.post("/api/match", json={"artist": "a", "title": "", "source": "soundcloud"}).status_code == 400
     assert client.post("/api/match", json={"artist": "a", "title": "t", "source": "spotify"}).status_code == 400
     client.post("/api/auth/logout")
