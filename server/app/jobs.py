@@ -195,32 +195,72 @@ def search(q: str, limit: int = 12, source: str = "soundcloud") -> list[dict]:
 
 
 _SPOTIFY_ID = re.compile(r"^/(?:intl-[a-z]{2}(?:-[A-Za-z]{2})?/)?playlist/([A-Za-z0-9]{22})/?$")
+_SPOTIFY_TRACK = re.compile(r"^/(?:intl-[a-z]{2}(?:-[A-Za-z]{2})?/)?track/([A-Za-z0-9]{22})/?$")
+TRACK_SOURCES = ("mp3pm", "soundcloud", "youtube")      # orden de búsqueda de una canción de Spotify
 
 
-def spotify_playlist(url: str) -> dict:
-    """Pistas de una playlist pública de Spotify leyendo su página embed (sin API ni credenciales; no es una API
-    documentada, así que puede dejar de funcionar). Devuelve {id, name, tracks: [{artist, title, duration}]}."""
+def _spotify_id(rx: re.Pattern, url: str) -> str | None:
+    u = urlparse(url.strip())
+    m = rx.match(u.path)
+    return m.group(1) if u.scheme == "https" and u.hostname == "open.spotify.com" and m else None
+
+
+def playlist_id(url: str) -> str | None:
+    return _spotify_id(_SPOTIFY_ID, url)
+
+
+def track_id(url: str) -> str | None:
+    return _spotify_id(_SPOTIFY_TRACK, url)
+
+
+def _spotify_embed(kind: str, sid: str) -> dict:
+    """`entity` de la página embed de Spotify (sin API ni credenciales; no es una API documentada, así que puede
+    dejar de funcionar)."""
     import urllib.error
     import urllib.request
-    u = urlparse(url.strip())
-    m = _SPOTIFY_ID.match(u.path)
-    if u.scheme != "https" or u.hostname != "open.spotify.com" or not m:
-        raise DownloadError("Pegue el enlace de una playlist de Spotify (open.spotify.com/playlist/…)")
-    req = urllib.request.Request(f"https://open.spotify.com/embed/playlist/{m.group(1)}", headers={"User-Agent": "Mozilla/5.0"})
+    req = urllib.request.Request(f"https://open.spotify.com/embed/{kind}/{sid}", headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             page = r.read(4_000_000).decode("utf-8", "replace")
         data = json.loads(re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', page, re.S).group(1))
-        ent = data["props"]["pageProps"]["state"]["data"]["entity"]
-        tracks = [{"artist": t.get("subtitle", "").replace("\xa0", " ").strip(), "title": t.get("title", "").strip(),
-                   "duration": int((t.get("duration") or 0) // 1000)} for t in ent.get("trackList") or [] if t.get("title")]
+        return data["props"]["pageProps"]["state"]["data"]["entity"]
     except (urllib.error.URLError, TimeoutError, OSError):
         raise DownloadError("Spotify no respondió; intente de nuevo")
     except (AttributeError, KeyError, TypeError, ValueError):
+        raise DownloadError("No se pudo leer la playlist (¿es pública?)" if kind == "playlist"
+                            else "No se pudo leer la canción de Spotify")
+
+
+def spotify_playlist(url: str) -> dict:
+    """Pistas de una playlist pública de Spotify. Devuelve {id, name, tracks: [{artist, title, duration}]}."""
+    pid = playlist_id(url)
+    if not pid:
+        raise DownloadError("Pegue el enlace de una playlist de Spotify (open.spotify.com/playlist/…)")
+    ent = _spotify_embed("playlist", pid)
+    try:
+        tracks = [{"artist": t.get("subtitle", "").replace("\xa0", " ").strip(), "title": t.get("title", "").strip(),
+                   "duration": int((t.get("duration") or 0) // 1000)} for t in ent.get("trackList") or [] if t.get("title")]
+    except (AttributeError, TypeError, ValueError):
         raise DownloadError("No se pudo leer la playlist (¿es pública?)")
     if not tracks:
         raise DownloadError("La playlist no tiene canciones o no es pública")
-    return {"id": m.group(1), "name": ent.get("name") or "Playlist", "tracks": tracks}
+    return {"id": pid, "name": ent.get("name") or "Playlist", "tracks": tracks}
+
+
+def spotify_track(url: str) -> dict:
+    """{artist, title, duration} de una canción de Spotify."""
+    sid = track_id(url)
+    if not sid:
+        raise DownloadError("Pegue el enlace de una canción de Spotify (open.spotify.com/track/…)")
+    ent = _spotify_embed("track", sid)
+    try:
+        name = ent.get("name") if ent.get("type") == "track" else None
+        if not name:
+            raise ValueError
+        return {"artist": ", ".join(a["name"] for a in ent.get("artists") or [] if a.get("name")), "title": name.strip(),
+                "duration": int((ent.get("duration") or 0) // 1000)}
+    except (AttributeError, KeyError, TypeError, ValueError):
+        raise DownloadError("No se pudo leer la canción de Spotify")
 
 
 def _tokens(text: str) -> set[str]:
@@ -232,17 +272,20 @@ def _tokens(text: str) -> set[str]:
 _VARIANTS = {"remix", "mashup", "mix", "bootleg", "slowed", "sped", "nightcore", "reverb", "karaoke", "instrumental", "cover", "acoustic", "8d"}
 
 
-def best_match(items: list[dict], artist: str, title: str, duration: int) -> dict | None:
+def best_match(items: list[dict], artist: str, title: str, duration: int, exact: bool = False) -> dict | None:
     """El resultado cuya duración está a ±10 s de la pista, con el título y el artista presentes en su nombre.
-    Si hay varios, el de duración más cercana."""
+    Si hay varios, el de duración más cercana. `exact`: todos los tokens, duración conocida y a ±5 s."""
+    if exact and duration <= 0:
+        return None
+    need = 1.0 if exact else 0.6
     want, first = _tokens(re.sub(r"[(\[].*?[)\]]", " ", title)), _tokens(re.split(r",|&|\bft\b|\bfeat\b", artist, flags=re.I)[0])
-    best, best_diff = None, 11
+    best, best_diff = None, 6 if exact else 11
     for it in items:
         have = _tokens(f"{it['name']} {it.get('channel', '')}")
         if (have & _VARIANTS) - _tokens(title):      # slowed, nightcore, karaoke…: no es la grabación original
             continue
         diff = abs(it["duration"] - duration) if duration else 0
-        if diff < best_diff and want and len(want & have) / len(want) >= 0.6 and (not first or len(first & have) / len(first) >= 0.6):
+        if diff < best_diff and want and len(want & have) / len(want) >= need and (not first or len(first & have) / len(first) >= need):
             best, best_diff = it, diff
     return best
 

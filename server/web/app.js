@@ -173,7 +173,12 @@ async function enter(user) {
   selectTab(!isAdmin && saved === "tab-admin" ? "tab-songs" : saved);
   if (!$("pair").hidden) selectTab("tab-switch");
   if (user.role === "admin") { loadUsers().catch(() => {}); loadCookies(); }
-  loadPlaylists(); $("share-toggle").checked = user.share; lastJobs = ""; lastShared = ""; refresh();
+  loadPlaylists(); loadSpotify();
+  if (spotifyBack) {
+    toast(spotifyBack === "ok" ? "Spotify conectado." : "No se pudo conectar Spotify.", spotifyBack === "ok");
+    history.replaceState(null, "", location.pathname); spotifyBack = null;
+  }
+  $("share-toggle").checked = user.share; lastJobs = ""; lastShared = ""; refresh();
   clearInterval(timer); timer = setInterval(refresh, 3000);
 }
 
@@ -472,11 +477,49 @@ $("pl-form").addEventListener("submit", async (e) => {
   } catch (err) { fieldErr($("pl-url"), err.message); }
 });
 
+/* ---------- cuenta de Spotify (OAuth) ---------- */
+let spotifyBack = new URLSearchParams(location.search).get("spotify");
+async function loadSpotify() {
+  let s;
+  try { s = await api("/api/spotify/status"); } catch { return; }
+  $("sp-box").hidden = !s.configured; $("sp-off").hidden = s.connected; $("sp-on").hidden = !s.connected;
+  const ul = $("sp-lists"); ul.replaceChildren();
+  if (!s.connected) return;
+  let list;
+  try { list = await api("/api/spotify/playlists"); }
+  catch (err) { ul.append(el("li", { className: "empty", textContent: err.message })); return; }
+  if (!list.length) { ul.append(el("li", { className: "empty", textContent: "Su cuenta de Spotify no tiene playlists." })); return; }
+  for (const p of list) {
+    const btn = el("button", { type: "button", className: "btn ghost", textContent: "Cargar" });
+    btn.setAttribute("aria-label", `Cargar ${p.name}`);
+    btn.addEventListener("click", async () => {
+      try { await openPlaylist(await busy(btn, () => post("/api/playlist", { url: `https://open.spotify.com/playlist/${p.id}` }), "Cargando…")); }
+      catch (err) { toast(err.message, false); }
+    });
+    ul.append(el("li", { className: "item" }, el("span", { textContent: `${p.name} · ${p.total} pistas` }), el("div", { className: "actions" }, btn)));
+  }
+}
+$("sp-connect").addEventListener("click", () => { location.href = "/api/spotify/login"; });
+$("sp-disconnect").addEventListener("click", async () => {
+  try { await send("DELETE", "/api/spotify"); toast("Spotify desconectado."); } catch (err) { toast(err.message, false); }
+  loadSpotify();
+});
+
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const url = $("url").value.trim();
   if (!file && !url) return say("msg", "Elija un archivo o pegue una URL.");
   if (file && url) return say("msg", "Use solo uno: archivo o URL.");
+  if (!file && /^https:\/\/open\.spotify\.com\/(intl-[\w-]+\/)?track\//.test(url)) {
+    $("submit").disabled = true; say("msg", "Buscando una coincidencia exacta…");
+    try {
+      const r = await post("/api/spotify/track", { url });
+      say("msg", `En cola: ${r.track.artist} – ${r.track.title} (${r.match.name}, ${r.match.source}).`, true);
+      e.target.reset(); lastJobs = ""; refresh();
+    } catch (err) { say("msg", err.message); }
+    finally { $("submit").disabled = false; }
+    return;
+  }
   const fd = new FormData();
   if (file) fd.append("file", file); else fd.append("url", url);
   fd.append("title", $("title").value); fd.append("artist", $("artist").value);

@@ -17,10 +17,10 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, ftp, jobs, mail, storage, suggest
+from . import auth, ftp, jobs, mail, spotify, storage, suggest
 
 MAX_BYTES = 100 * 1024 * 1024
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -270,8 +270,15 @@ def admin_delete_user(uid: int, admin: dict = Depends(auth.admin_user)):
         raise HTTPException(400, "No puede eliminarse a sí mismo")
     auth.revoke_user_sessions(uid)
     storage._q("DELETE FROM playlists WHERE user_id=?", (uid,))
+    storage._q("DELETE FROM spotify_tokens WHERE user_id=?", (uid,))
     storage._q("DELETE FROM users WHERE id=?", (uid,))
     return {"ok": True}
+
+
+def _check_active(user: dict) -> None:
+    active = [j for j in storage.list_jobs(user_id=user["id"]) if j["status"] in ("queued", "running")]
+    if len(active) >= MAX_ACTIVE_PER_USER:
+        raise HTTPException(429, f"Ya tiene {MAX_ACTIVE_PER_USER} canciones en proceso; espere a que terminen")
 
 
 @app.post("/api/jobs", status_code=201)
@@ -282,9 +289,7 @@ async def create_job(file: UploadFile | None = File(None), url: str = Form(""),
     if has_file == bool(url):
         raise HTTPException(400, "Envíe un archivo o una URL (solo uno)")
     title, artist = title.strip()[:200], artist.strip()[:200]
-    active = [j for j in storage.list_jobs(user_id=user["id"]) if j["status"] in ("queued", "running")]
-    if len(active) >= MAX_ACTIVE_PER_USER:
-        raise HTTPException(429, f"Ya tiene {MAX_ACTIVE_PER_USER} canciones en proceso; espere a que terminen")
+    _check_active(user)
     if url:
         if len(url) > 2000 or not _public_url_ok(url):
             raise HTTPException(400, "URL inválida o no permitida")
@@ -474,10 +479,23 @@ def _pl_public(r: dict) -> dict:
 async def playlist(request: Request, user: dict = Depends(auth.current_user)):
     """Carga una playlist de Spotify y la guarda en las del usuario; si ya la tenía, conserva el avance de cada pista."""
     body = await request.json()
+    url, data = str(body.get("url", "")), None
+    pid = jobs.playlist_id(url)
     try:
-        data = await run_in_threadpool(jobs.spotify_playlist, str(body.get("url", "")))
-    except jobs.DownloadError as e:
-        raise HTTPException(400, str(e))
+        token = await run_in_threadpool(spotify.token_for, user["id"]) if pid else None
+    except spotify.SpotifyError:                # Spotify caído al refrescar → embed
+        token = None
+    if token:
+        try:
+            data = await run_in_threadpool(spotify.playlist, pid, token)
+        except spotify.SpotifyError as e:
+            if e.status != 403:                 # 403: playlist ajena → respaldo embed (solo públicas)
+                raise HTTPException(400, str(e))
+    if data is None:
+        try:
+            data = await run_in_threadpool(jobs.spotify_playlist, url)
+        except jobs.DownloadError as e:
+            raise HTTPException(400, str(e))
     old = storage._q("SELECT * FROM playlists WHERE user_id=? AND spotify_id=?", (user["id"], data["id"])).fetchone()
     prev = {(t["artist"], t["title"]): t for t in json.loads(old["tracks"])} if old else {}
     tracks = [prev.get((t["artist"], t["title"])) or {**t, "sel": True, "state": "pending", "match": None, "msg": "", "job": ""} for t in data["tracks"]]
@@ -532,6 +550,88 @@ async def match_track(request: Request, user: dict = Depends(auth.current_user))
         duration = 0
     items = await run_in_threadpool(_search_cached, f"{artist} {title}", str(body.get("source", "soundcloud")), user)
     return {"match": jobs.best_match(items, artist, title, duration)}
+
+
+SP_STATE_TTL = 600
+SP_STATE_MAX = 200
+_sp_states: dict = {}        # state -> (user_id, exp)
+
+
+def _sp_redirect(request: Request) -> str:
+    return f"{_base_url(request)}/api/spotify/callback"
+
+
+@app.get("/api/spotify/status")
+def spotify_status(user: dict = Depends(auth.current_user)):
+    return {"configured": spotify.configured(), "connected": spotify.connected(user["id"])}
+
+
+@app.get("/api/spotify/login")
+def spotify_login(request: Request, user: dict = Depends(auth.current_user)):
+    if not spotify.configured():
+        raise HTTPException(503, "Spotify no está configurado en el servidor")
+    now = time.time()
+    for k in [k for k, v in _sp_states.items() if v[1] < now]:
+        del _sp_states[k]
+    if len(_sp_states) >= SP_STATE_MAX:
+        raise HTTPException(429, "Demasiadas conexiones pendientes; intente en unos minutos")
+    state = secrets.token_urlsafe(24)
+    _sp_states[state] = (user["id"], now + SP_STATE_TTL)
+    return RedirectResponse(spotify.auth_url(state, _sp_redirect(request)), 302)
+
+
+@app.get("/api/spotify/callback")
+async def spotify_callback(request: Request, code: str = "", state: str = "", error: str = "",
+                           user: dict = Depends(auth.current_user)):
+    s = _sp_states.pop(state, None)
+    if error or not code or s is None or s[0] != user["id"] or s[1] < time.time():
+        return RedirectResponse("/?spotify=error", 302)
+    try:
+        await run_in_threadpool(spotify.connect, user["id"], code, _sp_redirect(request))
+    except spotify.SpotifyError:
+        return RedirectResponse("/?spotify=error", 302)
+    return RedirectResponse("/?spotify=ok", 302)
+
+
+@app.delete("/api/spotify")
+def spotify_disconnect(user: dict = Depends(auth.current_user)):
+    spotify.disconnect(user["id"])
+    return {"ok": True}
+
+
+@app.get("/api/spotify/playlists")
+async def spotify_playlists(user: dict = Depends(auth.current_user)):
+    try:
+        token = await run_in_threadpool(spotify.token_for, user["id"])
+        if token is None:
+            raise HTTPException(409, "Conecte su cuenta de Spotify")
+        return await run_in_threadpool(spotify.my_playlists, token)
+    except spotify.SpotifyError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/api/spotify/track", status_code=201)
+async def spotify_track(request: Request, user: dict = Depends(auth.current_user)):
+    """Canción de Spotify → trabajo, solo si hay una coincidencia exacta (MP3.pm, luego SoundCloud, luego YouTube)."""
+    body = await request.json()
+    try:
+        t = await run_in_threadpool(jobs.spotify_track, str(body.get("url", "")))
+    except jobs.DownloadError as e:
+        raise HTTPException(400, str(e))
+    _check_active(user)
+    for src in jobs.TRACK_SOURCES:
+        try:
+            items = await run_in_threadpool(_search_cached, f"{t['artist']} {t['title']}", src, user)
+        except HTTPException as e:
+            if e.status_code == 502:            # fuente caída: siguiente
+                continue
+            raise
+        m = jobs.best_match(items, t["artist"], t["title"], t["duration"], exact=True)
+        if m and _public_url_ok(m["url"]):
+            jid = storage.create("url", m["url"], t["title"][:200], t["artist"][:200], user["id"])
+            jobs.kick()
+            return {"job": _public(storage.get(jid)), "match": m, "track": t}
+    raise HTTPException(404, "No hay una coincidencia exacta en MP3.pm, SoundCloud ni YouTube; búsquela en «Buscar» y elija a mano")
 
 
 @app.get("/api/suggest")

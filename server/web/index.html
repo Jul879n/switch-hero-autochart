@@ -99,7 +99,14 @@
         <div><label for="pl-url" class="sr-only">Enlace de la playlist</label><input id="pl-url" type="url" placeholder="https://open.spotify.com/playlist/…" autocomplete="off" aria-describedby="pl-url-err"><p id="pl-url-err" class="field-err"></p></div>
         <button type="submit" class="btn">Cargar playlist</button>
       </form>
-      <p class="hint">Solo playlists públicas. «Generar todo» busca cada pista y solo genera las que coinciden en artista, título y duración.</p>
+      <p class="hint">Pegue el enlace de una playlist pública o conecte su cuenta de Spotify para elegir entre las suyas, incluidas las privadas. «Generar todo» busca cada pista y solo genera las que coinciden en artista, título y duración.</p>
+      <div id="sp-box" hidden>
+        <div id="sp-off" class="actions"><button type="button" id="sp-connect" class="btn ghost">Conectar Spotify</button></div>
+        <div id="sp-on" hidden>
+          <div class="actions"><button type="button" id="sp-disconnect" class="btn ghost">Desconectar Spotify</button></div>
+          <ul id="sp-lists" class="list" aria-label="Playlists de su cuenta de Spotify"></ul>
+        </div>
+      </div>
     </section>
     <details id="mypl" class="card fold" open>
       <summary><h2 id="mypl-h">Mis playlists</h2></summary>
@@ -115,7 +122,7 @@
           <input id="file" type="file" accept="audio/*,video/*" hidden>
         </div>
         <label for="url">o pegue una URL</label>
-        <span class="hint">YouTube, SoundCloud, Bandcamp, Drive, Dropbox u otros sitios, o un enlace directo a un archivo de audio o video</span>
+        <span class="hint">YouTube, SoundCloud, Bandcamp, Drive, Dropbox u otros sitios, un enlace directo a un archivo de audio o video, o una canción de Spotify (se busca en MP3.pm, SoundCloud y YouTube y solo se genera si coincide exactamente)</span>
         <input id="url" type="url" placeholder="https://…" autocomplete="off">
         <div class="row">
           <div class="combo"><label for="title">Título (opcional)</label><input id="title" type="text" maxlength="200" role="combobox" aria-expanded="false" aria-controls="title-list" aria-autocomplete="list" autocomplete="off"><ul id="title-list" class="combo-list" role="listbox" hidden></ul></div>

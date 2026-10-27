@@ -601,3 +601,146 @@ def test_saved_playlists(client, monkeypatch):
     login(client)
     assert client.delete(f"/api/playlists/{pid}").status_code == 200
     assert client.get(f"/api/playlists/{pid}").status_code == 404
+
+
+def _fake_spotify(monkeypatch, routes):
+    """Reemplaza el único punto de red de spotify.py; `routes` asigna prefijo de URL -> respuesta (o excepción)."""
+    from app import spotify
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "cid")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "sec")
+    calls = []
+
+    def fake(url, data=None, headers=None):
+        calls.append((url, data))
+        for prefix, resp in routes.items():
+            if url.startswith(prefix):
+                if isinstance(resp, Exception):
+                    raise resp
+                return resp(url, data) if callable(resp) else resp
+        raise AssertionError(f"URL inesperada: {url}")
+    monkeypatch.setattr(spotify, "_http", fake)
+    return calls
+
+
+def test_spotify_oauth(client, monkeypatch):
+    from urllib.parse import parse_qs, urlparse
+    assert client.get("/api/spotify/status").status_code == 401
+    login(client)
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
+    assert client.get("/api/spotify/status").json() == {"configured": False, "connected": False}
+    assert client.get("/api/spotify/login", follow_redirects=False).status_code == 503
+    calls = _fake_spotify(monkeypatch, {"https://accounts.spotify.com/api/token":
+                                        {"access_token": "AT", "refresh_token": "RT", "expires_in": 3600}})
+    assert client.get("/api/spotify/status").json() == {"configured": True, "connected": False}
+    r = client.get("/api/spotify/login", follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"].startswith("https://accounts.spotify.com/authorize?")
+    state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+    assert client.get("/api/spotify/callback?code=abc&state=nope", follow_redirects=False).headers["location"] == "/?spotify=error"
+    assert client.get(f"/api/spotify/callback?error=access_denied&state={state}", follow_redirects=False).headers["location"] == "/?spotify=error"
+    r = client.get("/api/spotify/login", follow_redirects=False)
+    state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+    assert client.get(f"/api/spotify/callback?code=abc&state={state}", follow_redirects=False).headers["location"] == "/?spotify=ok"
+    assert calls[-1][1]["grant_type"] == "authorization_code" and calls[-1][1]["code"] == "abc"
+    assert client.get("/api/spotify/status").json()["connected"] is True
+    assert client.get(f"/api/spotify/callback?code=abc&state={state}", follow_redirects=False).headers["location"] == "/?spotify=error"
+    assert client.delete("/api/spotify").status_code == 200
+    assert client.get("/api/spotify/status").json()["connected"] is False
+
+
+def test_spotify_api_playlists(client, monkeypatch):
+    import io
+    import time
+    import urllib.request
+    from app import spotify, storage
+    login(client)
+    uid = client.get("/api/auth/me").json()["id"]
+
+    def put_token(expires):
+        storage._q("INSERT OR REPLACE INTO spotify_tokens(user_id,access,refresh,expires) VALUES(?,?,?,?)", (uid, "AT", "RT", expires))
+
+    own = {"name": "Mía", "items": {"items": [
+        {"item": {"type": "track", "name": "Tema", "artists": [{"name": "A"}, {"name": "B"}], "duration_ms": 200400}},
+        {"item": {"type": "episode", "name": "Podcast"}}, {"item": None}], "next": None}}
+    api = "https://api.spotify.com/v1"
+    calls = _fake_spotify(monkeypatch, {
+        f"{api}/me/playlists?limit=50": {"items": [{"id": "p1", "name": "Uno", "items": {"total": 3}}, None],
+                                         "next": f"{api}/me/playlists?offset=50&limit=50"},
+        f"{api}/me/playlists?offset": {"items": [{"id": "p2", "name": "Dos"}], "next": None},
+        f"{api}/playlists/37i9dQZF1DXcBWIGoYBM5M": own,
+        "https://accounts.spotify.com/api/token": {"access_token": "AT2", "expires_in": 3600}})
+    urlopen_calls = []
+    page = _spotify_page([{"title": "Embed", "subtitle": "Z", "duration": 100000}])
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=0: urlopen_calls.append(req.full_url) or io.BytesIO(page))
+    assert client.get("/api/spotify/playlists").status_code == 409
+    put_token(time.time() + 3600)
+    assert client.get("/api/spotify/playlists").json() == [{"id": "p1", "name": "Uno", "total": 3}, {"id": "p2", "name": "Dos", "total": 0}]
+    url = "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
+    r = client.post("/api/playlist", json={"url": url})
+    assert r.status_code == 200 and r.json()["tracks"][0]["artist"] == "A, B" and r.json()["tracks"][0]["duration"] == 200
+    assert len(r.json()["tracks"]) == 1 and urlopen_calls == []
+    own.pop("items")                                                        # playlist ajena: sin pistas en la API
+    r = client.post("/api/playlist", json={"url": url})
+    assert r.json()["tracks"][0]["title"] == "Embed" and len(urlopen_calls) == 1
+    own["items"] = {"items": [], "next": None}                              # propia pero vacía: no cae al embed
+    assert client.post("/api/playlist", json={"url": url}).status_code == 400 and len(urlopen_calls) == 1
+    put_token(time.time() - 10)                                             # vencido: refresca y conserva el refresh anterior
+    client.get("/api/spotify/playlists")
+    assert [c for c in calls if c[1]][-1][1] == {"grant_type": "refresh_token", "refresh_token": "RT"}
+    row = storage._q("SELECT access, refresh FROM spotify_tokens WHERE user_id=?", (uid,)).fetchone()
+    assert (row["access"], row["refresh"]) == ("AT2", "RT")
+    put_token(time.time() - 10)                                             # refresh revocado: se desconecta
+    _fake_spotify(monkeypatch, {"https://accounts.spotify.com/api/token": spotify.SpotifyError("x", 400)})
+    assert client.get("/api/spotify/playlists").status_code == 409
+    assert not spotify.connected(uid)
+
+
+def test_spotify_track(client, monkeypatch):
+    import io
+    import json
+    import urllib.request
+    from app import main
+    data = {"props": {"pageProps": {"state": {"data": {"entity": {
+        "type": "track", "name": "Tema Uno", "artists": [{"name": "Banda Uno"}], "duration": 200500}}}}}}
+    page = ('<script id="__NEXT_DATA__" type="application/json">' + json.dumps(data) + "</script>").encode()
+    net = []
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=0: net.append(req.full_url) or io.BytesIO(page))
+    monkeypatch.setattr(main, "_public_url_ok", lambda u: True)
+    main._search_cache.clear()
+    sources, hits = [], {}
+
+    def fake_search(q, source="soundcloud", limit=12):
+        sources.append(source)
+        return hits.get(source, [])
+    monkeypatch.setattr(jobs, "search", fake_search)
+    track = "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC"
+    assert client.post("/api/spotify/track", json={"url": track}).status_code == 401
+    login(client)
+    before = len(client.get("/api/jobs").json())
+    assert client.post("/api/spotify/track", json={"url": track}).status_code == 404       # nada exacto
+    assert sources == ["mp3pm", "soundcloud", "youtube"] and len(client.get("/api/jobs").json()) == before
+    hits["soundcloud"] = [{"url": "https://sc.x/a", "name": "Banda Uno - Tema Uno", "channel": "c", "duration": 202, "source": "soundcloud"}]
+    main._search_cache.clear(); sources.clear()
+    r = client.post("/api/spotify/track", json={"url": track})
+    assert r.status_code == 201 and sources == ["mp3pm", "soundcloud"]
+    assert (r.json()["job"]["title"], r.json()["job"]["artist"]) == ("Tema Uno", "Banda Uno")
+    hits["mp3pm"] = [{"url": "https://mp3.x/a", "name": "Banda Uno - Tema Uno", "channel": "MP3.pm", "duration": 200, "source": "mp3pm"}]
+    main._search_cache.clear(); sources.clear()
+    assert client.post("/api/spotify/track", json={"url": track}).status_code == 201 and sources == ["mp3pm"]
+    n = len(net)
+    for bad in ("https://evil.com/track/4uLU6hMCjMI75M1A2tKUQC", "http://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
+                "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"):
+        assert client.post("/api/spotify/track", json={"url": bad}).status_code == 400
+    assert len(net) == n
+
+
+def test_best_match_exact():
+    from app import jobs
+    def m(name, dur, title="Tema Uno", want=200):
+        return jobs.best_match([{"name": name, "channel": "", "duration": dur}], "Banda Uno", title, want, exact=True)
+    assert m("Banda Uno - Tema Uno", 203)
+    assert m("Banda Uno - Tema", 200, title="Tema Largo") is None          # falta un token del título
+    assert m("Banda Uno - Tema Uno", 207) is None                          # fuera de ±5 s
+    assert m("Banda Uno - Tema Uno", 200, want=0) is None                  # duración desconocida
+    assert m("Banda Uno - Tema Uno (Remix)", 200) is None
+    assert jobs.best_match([{"name": "Banda Uno - Tema Uno", "channel": "", "duration": 208}], "Banda Uno", "Tema Uno", 200)
