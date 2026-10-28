@@ -307,6 +307,9 @@ def best_match(items: list[dict], artist: str, title: str, duration: int, exact:
     return best
 
 
+YT_FALLBACK_CLIENTS = ("mweb", "android_vr")
+
+
 def download(url: str, dest: Path) -> dict:
     """yt-dlp -> dest/input.<ext>; devuelve {title, artist, thumb, source}."""
     dest.mkdir(parents=True, exist_ok=True)
@@ -317,6 +320,12 @@ def download(url: str, dest: Path) -> dict:
     if cookies.is_file():
         cmd += ["--cookies", str(cookies)]
     r = subprocess.run(cmd + ["--", url], capture_output=True, text=True, timeout=1200)
+    if r.returncode != 0 and (urlparse(url).hostname or "").endswith(("youtube.com", "youtu.be")):
+        for client in YT_FALLBACK_CLIENTS:      # sin cookies: otros clientes de YouTube que no exigen iniciar sesión
+            r = subprocess.run(cmd + ["--extractor-args", f"youtube:player_client={client}", "--", url],
+                               capture_output=True, text=True, timeout=1200)
+            if r.returncode == 0:
+                break
     if r.returncode != 0:
         msg = (r.stderr.strip().splitlines() or ["error desconocido"])[-1]
         if "Sign in" in msg or "bot" in msg:

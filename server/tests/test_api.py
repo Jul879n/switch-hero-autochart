@@ -781,3 +781,32 @@ def test_exact_match_youtube_topic_fallback(monkeypatch):
     assert got == topic and len(calls) == 2
     calls.clear()
     assert m._exact_match("Tatsuya Kitani", "Thanatophobia", 217, "youtube", {"id": 1}) is None and len(calls) == 1      # título latino: sin segunda búsqueda
+
+
+def test_youtube_download_retries_other_clients(tmp_path, monkeypatch):
+    import subprocess
+    class R:
+        def __init__(self, code, err=""): self.returncode, self.stderr, self.stdout = code, err, ""
+    calls = []
+    def run(cmd, **k):
+        calls.append(cmd)
+        if "youtube:player_client=mweb" in cmd:
+            (tmp_path / "input.m4a").write_bytes(b"x")
+            return R(0)
+        return R(1, "ERROR: Sign in to confirm you're not a bot")
+    monkeypatch.setattr(subprocess, "run", run)
+    meta = jobs.download("https://www.youtube.com/watch?v=abc", tmp_path)
+    assert meta["source"].endswith("input.m4a") and len(calls) == 2
+    calls.clear()
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: calls.append(cmd) or R(1, "ERROR: Sign in to confirm you're not a bot"))
+    try:
+        jobs.download("https://www.youtube.com/watch?v=abc", tmp_path / "otro")
+        assert False
+    except jobs.DownloadError as e:
+        assert "bloqueó" in str(e) and len(calls) == 3       # intento normal + mweb + android_vr
+    calls.clear()
+    try:
+        jobs.download("https://soundcloud.com/x/y", tmp_path / "sc")
+    except jobs.DownloadError:
+        pass
+    assert len(calls) == 1                                    # fuera de YouTube no hay reintentos
