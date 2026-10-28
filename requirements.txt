@@ -9,3 +9,4 @@ uvicorn[standard]
 python-multipart
 mutagen
 numpy<2
+pykakasi

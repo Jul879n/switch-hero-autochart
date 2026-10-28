@@ -304,6 +304,31 @@ def _is_variant(name: str, title: str) -> bool:
     return any(m.group(0).lower() not in own for m in _VARIANT_RX.finditer(name))
 
 
+def romaji(text: str) -> str:
+    """Transliteración Hepburn con palabras separadas ('' si pykakasi no está instalado)."""
+    try:
+        import pykakasi
+    except ImportError:
+        return ""
+    return " ".join(x["hepburn"] for x in pykakasi.kakasi().convert(text) if x["hepburn"].strip())
+
+
+def _romaji_ratio(a: str, b: str) -> float:
+    import difflib
+    flat = lambda t: re.sub(r"[^a-z0-9]", "", t.lower())
+    x, y = flat(romaji(re.sub(r"[(\[].*?[)\]]", " ", a))), flat(re.sub(r"[(\[].*?[)\]]", " ", b))
+    return difflib.SequenceMatcher(None, x, y).ratio() if x and y else 0.0
+
+
+def _romaji_close(title: str, name: str) -> bool:
+    """¿«name» («Artista - Título» en romaji) lleva el mismo título que «title» (kana/kanji)? Sin pykakasi, regla desactivada."""
+    return _romaji_ratio(title.split(" - ")[0], re.split(r"\s+[-–—]\s+", name, maxsplit=1)[-1]) >= 0.6
+
+
+def _romaji_artist_close(artist: str, name: str) -> bool:
+    return _romaji_ratio(re.split(r",|&", artist)[0], re.split(r"\s+[-–—]\s+", name, maxsplit=1)[0]) >= 0.75
+
+
 def _non_latin(text: str) -> bool:
     return any(c.isalpha() and ord(c) >= 0x250 for c in text)
 
@@ -329,10 +354,14 @@ def best_match(items: list[dict], artist: str, title: str, duration: int, exact:
         if (have & _VARIANTS) - _tokens(title) or _is_variant(f"{it['name']} {it.get('channel', '')}", title):     # slowed, cover, en vivo…: no es la grabación original
             continue
         diff = abs(it["duration"] - duration) if duration else 0
-        if diff >= best_diff or not (not first or len(first & have) / len(first) >= need):
+        artist_ok = not first or len(first & have) / len(first) >= need
+        rom_artist = not artist_ok and exact and _non_latin(artist) and not _non_latin(it["name"]) and _romaji_artist_close(artist, it["name"])
+        if diff >= best_diff or not (artist_ok or rom_artist):
             continue
-        # Título japonés/coreano… y resultado en romaji (o al revés): mismo artista y duración casi idéntica, nombre solo en alfabeto latino.
-        rom = exact and _non_latin(title) and diff <= 1 and first and not _non_latin(it["name"]) and _tokens(it["name"]) - first
+        # Título japonés/coreano… y resultado en romaji: mismo artista y duración casi idéntica, nombre solo en alfabeto latino,
+        # y el título transliterado se parece al del resultado (un mismo artista tiene otras canciones de igual duración).
+        rom = (exact and _non_latin(title) and diff <= 1 and first and not _non_latin(it["name"]) and _tokens(it["name"]) - first
+               and _romaji_close(title, it["name"]))
         if rom or any(w and len(w & have) / len(w) >= need for w in alts):
             best, best_diff = it, diff
     return best

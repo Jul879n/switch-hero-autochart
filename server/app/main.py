@@ -415,13 +415,13 @@ _search_hits: dict = {}
 SEARCH_PER_MIN = 30        # búsquedas con yt-dlp (SoundCloud/YouTube) por usuario y minuto
 
 
-def _search_cached(q: str, source: str, user: dict) -> list[dict]:
+def _search_cached(q: str, source: str, user: dict, limit: int = 12) -> list[dict]:
     q = " ".join(q.split())[:120]
     if len(q) < 2:
         raise HTTPException(400, "Escriba al menos 2 letras")
     if source not in jobs.SOURCES:
         raise HTTPException(400, "Fuente no válida")
-    key = f"{source}:{q.lower()}"
+    key = f"{source}:{limit}:{q.lower()}"
     hit = _search_cache.get(key)
     if hit and time.time() - hit[0] < 3600:
         return hit[1]
@@ -432,7 +432,7 @@ def _search_cached(q: str, source: str, user: dict) -> list[dict]:
             raise HTTPException(429, "Demasiadas búsquedas; espere un minuto")
         _search_hits[user["id"]] = recent + [now]
     try:
-        items = jobs.search(q, source=source)
+        items = jobs.search(q, limit=limit, source=source)
     except jobs.DownloadError as e:
         raise HTTPException(502, str(e))
     if len(_search_cache) > 300:
@@ -555,6 +555,13 @@ def _exact_match(artist: str, title: str, duration: int, source: str, user: dict
         return None
     items = _search_cached(f"{artist} {title}", source, user)
     m = jobs.best_match(items, artist, title, duration, exact=True)
+    if not m and source == "mp3pm" and artist and (jobs._non_latin(title) or jobs._non_latin(artist)):
+        # kana/kanji: MP3.pm lo indexa en romaji; se busca por artista (en romaji si hace falta; hasta 50 pistas)
+        first = re.split(r",|&", artist)[0].strip()
+        q = (jobs.romaji(first) if jobs._non_latin(first) else first) if first else ""
+        m = jobs.best_match(_search_cached(q, source, user, 60) if len(q) >= 2 else [], artist, title, duration, exact=True)
+        if not m and q and jobs.romaji(title):             # artista + título transliterado («yorushika aporia»)
+            m = jobs.best_match(_search_cached(f"{q} {jobs.romaji(title.split(' - ')[0])}", source, user), artist, title, duration, exact=True)
     if not m and source == "youtube" and jobs._non_latin(title):
         m = jobs.best_match(_search_cached(f"{title} Provided to YouTube by", source, user), artist, title, duration, exact=True)
     return m

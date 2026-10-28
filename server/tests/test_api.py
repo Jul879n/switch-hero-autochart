@@ -869,3 +869,23 @@ def test_spotify_album_artist_and_library(client, monkeypatch):
         assert False
     except spotify.SpotifyError as e:
         assert "Vuelva a conectar" in str(e)
+
+
+def test_romaji_needs_similar_title():
+    assert jobs._romaji_close("生きるをする", "Macaroni Empitsu - Ikiru wo Suru")
+    assert jobs._romaji_close("青のすみか", "Tatsuya Kitani - Ao no Sumika (青のすみか)")
+    assert not jobs._romaji_close("インフェルノ", "Mrs. GREEN APPLE - Nani wo nani wo")
+    assert not jobs._romaji_close("タナトフォビア", "Tatsuya Kitani - Without Me")
+    def m(name, title, dur=217):
+        return jobs.best_match([{"name": name, "channel": "", "duration": dur}], "Tatsuya Kitani", title, 217, exact=True)
+    assert m("Tatsuya Kitani - Without Me", "タナトフォビア") is None          # mismo artista y duración, otra canción
+    assert m("Tatsuya Kitani - Thanatophobia", "タナトフォビア")                 # la transliteración (tanatofobia) se parece
+
+
+def test_exact_match_mp3pm_artist_fallback(monkeypatch):
+    from app import main as m
+    hit = {"name": "Tatsuya Kitani - Bakeneko", "channel": "MP3.pm", "duration": 168}
+    calls = []
+    monkeypatch.setattr(m, "_search_cached", lambda q, s, u, limit=12: calls.append((q, limit)) or ([hit] if limit == 60 else []))
+    assert m._exact_match("Tatsuya Kitani", "化け猫", 168, "mp3pm", {"id": 1}) == hit
+    assert calls == [("Tatsuya Kitani 化け猫", 12), ("Tatsuya Kitani", 60)]
