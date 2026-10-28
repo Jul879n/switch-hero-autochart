@@ -273,6 +273,15 @@ def _tokens(text: str) -> set[str]:
     return set(re.findall(r"\w+", "".join(out)))
 
 
+_VARIANT_RX = re.compile(r"\b(?:covered|piano|arrange\w*|live|ver\.?|acoustic|tutorial|reaction)\b|version\b|歌ってみた|弾いてみた|叩いてみた|カバー|アレンジ|ライブ|生演奏", re.I)
+
+
+def _is_variant(name: str, title: str) -> bool:
+    """Cover, versión en vivo, arreglo de piano, otra «version»…: solo cuenta si el propio título de Spotify lo dice."""
+    own = {m.group(0).lower() for m in _VARIANT_RX.finditer(title)}
+    return any(m.group(0).lower() not in own for m in _VARIANT_RX.finditer(name))
+
+
 def _non_latin(text: str) -> bool:
     return any(c.isalpha() and ord(c) >= 0x250 for c in text)
 
@@ -295,7 +304,7 @@ def best_match(items: list[dict], artist: str, title: str, duration: int, exact:
     best, best_diff = None, 6 if exact else 11
     for it in items:
         have = _tokens(f"{it['name']} {it.get('channel', '')}")
-        if (have & _VARIANTS) - _tokens(title):      # slowed, nightcore, karaoke…: no es la grabación original
+        if (have & _VARIANTS) - _tokens(title) or _is_variant(f"{it['name']} {it.get('channel', '')}", title):     # slowed, cover, en vivo…: no es la grabación original
             continue
         diff = abs(it["duration"] - duration) if duration else 0
         if diff >= best_diff or not (not first or len(first & have) / len(first) >= need):

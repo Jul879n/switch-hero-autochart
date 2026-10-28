@@ -814,3 +814,16 @@ def test_youtube_download_retries_other_clients(tmp_path, monkeypatch):
     except jobs.DownloadError:
         pass
     assert len(calls) == 1                                    # fuera de YouTube no hay reintentos
+
+
+def test_best_match_exact_rejects_variants():
+    def m(name, title="晴る", artist="ヨルシカ", channel=""):
+        return jobs.best_match([{"name": name, "channel": channel, "duration": 270}], artist, title, 270, exact=True)
+    assert m("晴る / ヨルシカ - Covered by エル") is None
+    assert m("ヨルシカ 晴る 歌ってみた") is None
+    assert m("ヨルシカ 晴る Piano arrangement") is None
+    assert m("ヨルシカ 晴る Live Clip (Live at ORIX THEATER)") is None
+    assert m("ヨルシカ 晴る (喜多Version)") is None
+    assert m("ヨルシカ 晴る")                                                                     # el original sí
+    assert m("ヨルシカ - 晴る 【Lyric Video】")                                                    # lyric video: audio original
+    assert m("Mina Okabe - Every Second (Japanese Version)", "Every Second - Japanese Version", "Mina Okabe")   # lo dice el título
