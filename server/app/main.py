@@ -539,6 +539,16 @@ def delete_playlist(pid: int, user: dict = Depends(auth.current_user)):
     return {"ok": True}
 
 
+def _exact_match(artist: str, title: str, duration: int, source: str, user: dict) -> dict | None:
+    """Coincidencia exacta en una fuente. Si el título no es latino y en YouTube no sale, se prueba el canal autogenerado
+    «Provided to YouTube» (ahí está el original, con título en romaji)."""
+    items = _search_cached(f"{artist} {title}", source, user)
+    m = jobs.best_match(items, artist, title, duration, exact=True)
+    if not m and source == "youtube" and jobs._non_latin(title):
+        m = jobs.best_match(_search_cached(f"{title} Provided to YouTube by", source, user), artist, title, duration, exact=True)
+    return m
+
+
 @app.post("/api/match")
 async def match_track(request: Request, user: dict = Depends(auth.current_user)):
     """Coincidencia exacta de una pista (todos los tokens, duración a ±5 s) en la fuente elegida; `null` si no hay."""
@@ -550,8 +560,7 @@ async def match_track(request: Request, user: dict = Depends(auth.current_user))
         duration = int(body.get("duration") or 0)
     except (TypeError, ValueError):
         duration = 0
-    items = await run_in_threadpool(_search_cached, f"{artist} {title}", str(body.get("source", "soundcloud")), user)
-    return {"match": jobs.best_match(items, artist, title, duration, exact=True)}
+    return {"match": await run_in_threadpool(_exact_match, artist, title, duration, str(body.get("source", "soundcloud")), user)}
 
 
 SP_STATE_TTL = 600
@@ -623,12 +632,11 @@ async def spotify_track(request: Request, user: dict = Depends(auth.current_user
     _check_active(user)
     for src in jobs.TRACK_SOURCES:
         try:
-            items = await run_in_threadpool(_search_cached, f"{t['artist']} {t['title']}", src, user)
+            m = await run_in_threadpool(_exact_match, t["artist"], t["title"], t["duration"], src, user)
         except HTTPException as e:
             if e.status_code == 502:            # fuente caída: siguiente
                 continue
             raise
-        m = jobs.best_match(items, t["artist"], t["title"], t["duration"], exact=True)
         if m and _public_url_ok(m["url"]):
             jid = storage.create("url", m["url"], t["title"][:200], t["artist"][:200], user["id"])
             jobs.kick()

@@ -769,3 +769,15 @@ def test_best_match_exact_romaji():
     assert m("Banda Uno - ファタール", "パステルレイン") is None                                                          # otra canción en japonés
     assert m("Banda Uno - Pastel Rain", "Fire Rain") is None                                                       # el modo romaji no aplica a títulos latinos
     assert m("Banda Uno - Rapport", "Rapport - Scar version.") is None                                               # «A - versión»: ambas latinas, no se parte
+
+
+def test_exact_match_youtube_topic_fallback(monkeypatch):
+    from app import main as m
+    topic = {"name": "Thanatophobia", "channel": "キタニタツヤ / Tatsuya Kitani", "duration": 216}
+    live = {"name": "タナトフォビア (Live)", "channel": "Otro", "duration": 219}
+    calls = []
+    monkeypatch.setattr(m, "_search_cached", lambda q, s, u: calls.append(q) or ([topic] if "Provided" in q else [live]))
+    got = m._exact_match("Tatsuya Kitani", "タナトフォビア", 217, "youtube", {"id": 1})
+    assert got == topic and len(calls) == 2
+    calls.clear()
+    assert m._exact_match("Tatsuya Kitani", "Thanatophobia", 217, "youtube", {"id": 1}) is None and len(calls) == 1      # título latino: sin segunda búsqueda
