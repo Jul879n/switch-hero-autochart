@@ -309,6 +309,7 @@ def best_match(items: list[dict], artist: str, title: str, duration: int, exact:
 
 YT_FALLBACK_CLIENTS = ("mweb", "android_vr")
 INVIDIOUS = [u.strip().rstrip("/") for u in os.environ.get("INVIDIOUS_INSTANCES", "https://yt.chocolatemoo53.com").split(",") if u.strip()]
+_inv_error = [""]      # último motivo de fallo del respaldo, para mostrarlo en el error
 _YT_ID = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/)([\w-]{11})")
 
 
@@ -325,6 +326,7 @@ def _invidious_download(url: str, dest: Path) -> dict | None:
                 info = json.load(r)
             audio = [f for f in info.get("adaptiveFormats", []) if str(f.get("type", "")).startswith("audio")]
             if not audio or not _host_is_public(urlparse(inst).hostname or ""):
+                _inv_error[0] = f"{urlparse(inst).hostname}: sin audio o host no público"
                 continue
             pick = next((f for f in audio if str(f.get("itag")) == "251"), None) or max(audio, key=lambda f: int(f.get("bitrate") or 0))
             ext = ".webm" if "webm" in pick["type"] else ".m4a"
@@ -342,7 +344,8 @@ def _invidious_download(url: str, dest: Path) -> dict | None:
             out.unlink(missing_ok=True)
         except DownloadError:
             raise
-        except Exception:
+        except Exception as e:
+            _inv_error[0] = f"{urlparse(inst).hostname}: {type(e).__name__} {str(e)[:80]}"
             continue
     return None
 
@@ -372,7 +375,7 @@ def download(url: str, dest: Path) -> dict:
         if "Sign in" in msg or "bot" in msg:
             raise DownloadError("YouTube bloqueó la descarga desde el servidor (exige iniciar sesión). "
                                 "Suba el archivo de audio directamente, o pida al administrador que cargue las "
-                                "cookies de YouTube en Administración.")
+                                "cookies de YouTube en Administración." + (f" [respaldo Invidious: {_inv_error[0]}]" if _inv_error[0] else ""))
         direct = direct_download(url, dest)        # cualquier enlace directo a un archivo (o Dropbox/Drive)
         if direct:
             return direct
