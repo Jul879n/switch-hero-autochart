@@ -799,6 +799,10 @@ def test_youtube_download_retries_other_clients(tmp_path, monkeypatch):
     assert meta["source"].endswith("input.m4a") and len(calls) == 2
     calls.clear()
     monkeypatch.setattr(subprocess, "run", lambda cmd, **k: calls.append(cmd) or R(1, "ERROR: Sign in to confirm you're not a bot"))
+    monkeypatch.setattr(jobs, "_invidious_download", lambda url, dest: {"source": "x.webm", "title": "T", "artist": "A"})
+    assert jobs.download("https://youtu.be/abcdefghijk", tmp_path / "inv")["title"] == "T"     # todo falla -> Invidious
+    calls.clear()
+    monkeypatch.setattr(jobs, "_invidious_download", lambda url, dest: None)
     try:
         jobs.download("https://www.youtube.com/watch?v=abc", tmp_path / "otro")
         assert False

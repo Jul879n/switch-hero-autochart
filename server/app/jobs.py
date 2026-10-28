@@ -308,6 +308,43 @@ def best_match(items: list[dict], artist: str, title: str, duration: int, exact:
 
 
 YT_FALLBACK_CLIENTS = ("mweb", "android_vr")
+INVIDIOUS = [u.strip().rstrip("/") for u in os.environ.get("INVIDIOUS_INSTANCES", "https://yt.chocolatemoo53.com").split(",") if u.strip()]
+_YT_ID = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/)([\w-]{11})")
+
+
+def _invidious_download(url: str, dest: Path) -> dict | None:
+    """Sin cookies: el audio de YouTube a través de una instancia pública de Invidious (hace de proxy). None si ninguna responde."""
+    import urllib.request
+    m = _YT_ID.search(url)
+    if not m:
+        return None
+    vid, hdr = m.group(1), {"User-Agent": "Mozilla/5.0 (Switch Hero Autochart)"}
+    for inst in INVIDIOUS:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"{inst}/api/v1/videos/{vid}?fields=title,author,adaptiveFormats", headers=hdr), timeout=20) as r:
+                info = json.load(r)
+            audio = [f for f in info.get("adaptiveFormats", []) if str(f.get("type", "")).startswith("audio")]
+            if not audio or not _host_is_public(urlparse(inst).hostname or ""):
+                continue
+            pick = next((f for f in audio if str(f.get("itag")) == "251"), None) or max(audio, key=lambda f: int(f.get("bitrate") or 0))
+            ext = ".webm" if "webm" in pick["type"] else ".m4a"
+            out, size = dest / f"input{ext}", 0
+            req = urllib.request.Request(f"{inst}/latest_version?" + urlencode({"id": vid, "itag": pick["itag"], "local": "true"}), headers=hdr)
+            with urllib.request.urlopen(req, timeout=60) as r, open(out, "wb") as fh:
+                while chunk := r.read(1 << 16):
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        out.unlink(missing_ok=True)
+                        raise DownloadError("El archivo supera 100 MB")
+                    fh.write(chunk)
+            if size > 0:
+                return {"source": str(out), "title": info.get("title") or "", "artist": info.get("author") or ""}
+            out.unlink(missing_ok=True)
+        except DownloadError:
+            raise
+        except Exception:
+            continue
+    return None
 
 
 def download(url: str, dest: Path) -> dict:
@@ -326,6 +363,10 @@ def download(url: str, dest: Path) -> dict:
                                capture_output=True, text=True, timeout=1200)
             if r.returncode == 0:
                 break
+        else:
+            meta = _invidious_download(url, dest)
+            if meta:
+                return meta
     if r.returncode != 0:
         msg = (r.stderr.strip().splitlines() or ["error desconocido"])[-1]
         if "Sign in" in msg or "bot" in msg:
