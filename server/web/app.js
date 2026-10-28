@@ -374,14 +374,16 @@ async function plRun(work) {
   pl.busy = true; pl.stop = false; plRender();
   try { await work(); } finally { pl.busy = false; plRender(); }
 }
-const gate = { last: 0 };      // máx. 10 búsquedas por minuto (límite del servidor)
+const gate = {};               // próximo turno libre por fuente: yt-dlp (SoundCloud/YouTube) máx. 30 por minuto (límite del servidor); MP3.pm sin límite
+const GAP = { mp3pm: 0, soundcloud: 2200, youtube: 2200 };
 async function plSearchTrack(t) {
   const first = $("pl-src").value;               // fuente preferida; si no hay coincidencia exacta, se prueban las demás
   const sources = [first, ...[...$("pl-src").options].map((o) => o.value).filter((v) => v !== first)];
   for (let i = 0; i < sources.length && !pl.stop;) {
-    await plWait(Math.max(0, 6500 - (Date.now() - gate.last)));
+    const at = Math.max(Date.now(), (gate[sources[i]] || 0) + GAP[sources[i]]); gate[sources[i]] = at;     // se reserva antes de esperar: las búsquedas en paralelo no chocan
+    await plWait(at - Date.now());
     if (pl.stop) return;
-    gate.last = Date.now(); t.state = "searching"; t.msg = ""; plRender();
+    t.state = "searching"; t.msg = ""; plRender();
     try {
       const r = await post("/api/match", { artist: t.artist, title: t.title, duration: t.duration, source: sources[i] });
       if (r.match) { t.match = r.match; t.state = "found"; plRender(); return; }
@@ -405,20 +407,19 @@ async function plGenTrack(t) {
   }
 }
 const plTodo = (t, state) => t.sel && t.state === state;
-$("pl-search").addEventListener("click", () => plRun(async () => {
-  for (const t of pl.tracks) { if (pl.stop) break; if (plTodo(t, "pending")) await plSearchTrack(t); }
-}));
+async function plPool(items, fn, n = 4) {      // n pistas a la vez
+  const q = [...items];
+  await Promise.all(Array.from({ length: n }, async () => { while (q.length && !pl.stop) await fn(q.shift()); }));
+}
+$("pl-search").addEventListener("click", () => plRun(() => plPool(pl.tracks.filter((t) => plTodo(t, "pending")), plSearchTrack)));
 $("pl-gen").addEventListener("click", () => plRun(async () => {
   for (const t of pl.tracks) { if (pl.stop) break; if (plTodo(t, "found")) await plGenTrack(t); }
 }));
 /* Generar todo: por cada pista seleccionada busca y, solo si coincide (artista, título y duración), la manda a la cola. */
-$("pl-all").addEventListener("click", () => plRun(async () => {
-  for (const t of pl.tracks) {
-    if (pl.stop) break;
-    if (plTodo(t, "pending")) await plSearchTrack(t);
-    if (!pl.stop && plTodo(t, "found")) await plGenTrack(t);
-  }
-}));
+$("pl-all").addEventListener("click", () => plRun(() => plPool(pl.tracks.filter((t) => t.sel && ["pending", "found"].includes(t.state)), async (t) => {
+  if (plTodo(t, "pending")) await plSearchTrack(t);
+  if (!pl.stop && plTodo(t, "found")) await plGenTrack(t);
+})));
 $("pl-selall").addEventListener("click", () => {
   const pick = pl.tracks.filter((t) => t.state !== "queued"), on = !pick.every((t) => t.sel);
   pick.forEach((t) => { t.sel = on; }); plRender();

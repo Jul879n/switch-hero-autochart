@@ -429,9 +429,13 @@ def test_song_search(client, monkeypatch):
     assert calls[-1][-1].startswith("scsearch") and "--cookies" not in calls[-1]
     assert [i["url"] for i in items] == ["https://soundcloud.com/g-r-f/daft-punk-around-the-world"]
     assert (items[0]["artist"], items[0]["title"], items[0]["thumb"], items[0]["source"]) == ("Daft Punk", "Around The World", "https://i1.sndcdn.com/b.jpg", "soundcloud")
-    for i in range(12):
+    from app import main as m
+    for i in range(m.SEARCH_PER_MIN + 2):
         last = client.get("/api/search", params={"q": f"tema {i}"})
     assert last.status_code == 429
+    mp3 = lambda: client.get("/api/search", params={"q": "tema libre", "source": "mp3pm"})     # MP3.pm no cuenta para el límite
+    monkeypatch.setattr(jobs, "_search_mp3pm", lambda q, limit: [])
+    assert mp3().status_code == 200
     jobs_err = R(); jobs_err.returncode = 1
     monkeypatch.setattr(subprocess, "run", lambda cmd, **k: jobs_err)
     from app import main as m
@@ -746,3 +750,22 @@ def test_best_match_exact():
     assert m("Banda Uno - Tema Uno", 200, want=0) is None                  # duración desconocida
     assert m("Banda Uno - Tema Uno (Remix)", 200) is None
     assert jobs.best_match([{"name": "Banda Uno - Tema Uno", "channel": "", "duration": 208}], "Banda Uno", "Tema Uno", 200)
+
+
+def test_best_match_exact_unicode():
+    items = [{"name": "Tatsuya Kitani - スカー", "channel": "", "duration": 259}]
+    assert jobs.best_match(items, "Tatsuya Kitani", "スカー", 259, exact=True)
+    assert jobs.best_match(items, "Tatsuya Kitani", "タナトフォビア", 259, exact=True) is None
+    assert jobs.best_match([{"name": "Beyoncé - Halo", "channel": "", "duration": 261}], "Beyonce", "Halo", 261, exact=True)
+
+
+def test_best_match_exact_romaji():
+    def m(name, title, want=212, artist="Banda Uno", dur=212):
+        return jobs.best_match([{"name": name, "channel": "", "duration": dur}], artist, title, want, exact=True)
+    assert m("Creepy Nuts - Yofukashino Uta (ED Theme)", "よふかしのうた - Yofukashino Uta", 240, "Creepy Nuts", 240)     # romaji de «título - romaji»
+    assert m("Banda Uno - Pastel Rain", "パステルレイン")                                                              # título japonés, resultado en romaji
+    assert m("Banda Uno - Pastel Rain", "パステルレイン", dur=214) is None                                            # duración no casi idéntica
+    assert m("Otro Artista - Pastel Rain", "パステルレイン") is None                                                    # otro artista
+    assert m("Banda Uno - ファタール", "パステルレイン") is None                                                          # otra canción en japonés
+    assert m("Banda Uno - Pastel Rain", "Fire Rain") is None                                                       # el modo romaji no aplica a títulos latinos
+    assert m("Banda Uno - Rapport", "Rapport - Scar version.") is None                                               # «A - versión»: ambas latinas, no se parte

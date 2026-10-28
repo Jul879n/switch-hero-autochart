@@ -412,6 +412,7 @@ def resume_job(jid: str, user: dict = Depends(auth.current_user)):
 
 _search_cache: dict = {}
 _search_hits: dict = {}
+SEARCH_PER_MIN = 30        # búsquedas con yt-dlp (SoundCloud/YouTube) por usuario y minuto
 
 
 def _search_cached(q: str, source: str, user: dict) -> list[dict]:
@@ -425,10 +426,11 @@ def _search_cached(q: str, source: str, user: dict) -> list[dict]:
     if hit and time.time() - hit[0] < 3600:
         return hit[1]
     now = time.time()
-    recent = [t for t in _search_hits.get(user["id"], []) if now - t < 60]
-    if len(recent) >= 10:                        # no gatillar bloqueos al servidor
-        raise HTTPException(429, "Demasiadas búsquedas; espere un minuto")
-    _search_hits[user["id"]] = recent + [now]
+    if source != "mp3pm":                        # MP3.pm es una página simple: sin límite; yt-dlp sí podría gatillar bloqueos
+        recent = [t for t in _search_hits.get(user["id"], []) if now - t < 60]
+        if len(recent) >= SEARCH_PER_MIN:
+            raise HTTPException(429, "Demasiadas búsquedas; espere un minuto")
+        _search_hits[user["id"]] = recent + [now]
     try:
         items = jobs.search(q, source=source)
     except jobs.DownloadError as e:

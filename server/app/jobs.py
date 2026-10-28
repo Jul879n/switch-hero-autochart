@@ -265,8 +265,16 @@ def spotify_track(url: str) -> dict:
 
 def _tokens(text: str) -> set[str]:
     import unicodedata
-    plain = unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode()
-    return set(re.findall(r"[a-z0-9]+", plain))
+    out, prev = [], ""
+    for c in unicodedata.normalize("NFKD", text.casefold()):
+        if unicodedata.combining(c) and prev and ord(prev) < 0x250:      # tildes del latín fuera; kana, hangul, etc. intactos
+            continue
+        out.append(c); prev = c
+    return set(re.findall(r"\w+", "".join(out)))
+
+
+def _non_latin(text: str) -> bool:
+    return any(c.isalpha() and ord(c) >= 0x250 for c in text)
 
 
 _VARIANTS = {"remix", "mashup", "mix", "bootleg", "slowed", "sped", "nightcore", "reverb", "karaoke", "instrumental", "cover", "acoustic", "8d"}
@@ -278,14 +286,23 @@ def best_match(items: list[dict], artist: str, title: str, duration: int, exact:
     if exact and duration <= 0:
         return None
     need = 1.0 if exact else 0.6
-    want, first = _tokens(re.sub(r"[(\[].*?[)\]]", " ", title)), _tokens(re.split(r",|&|\bft\b|\bfeat\b", artist, flags=re.I)[0])
+    base = re.sub(r"[(\[].*?[)\]]", " ", title)
+    parts = [p for p in re.split(r"\s+-\s+", base) if _tokens(p)]
+    alts = [_tokens(base)]
+    if len(parts) == 2 and _non_latin(parts[0]) != _non_latin(parts[1]):     # «堕天 - Daten»: vale cualquiera de las dos escrituras
+        alts += [_tokens(p) for p in parts]
+    first = _tokens(re.split(r",|&|\bft\b|\bfeat\b", artist, flags=re.I)[0])
     best, best_diff = None, 6 if exact else 11
     for it in items:
         have = _tokens(f"{it['name']} {it.get('channel', '')}")
         if (have & _VARIANTS) - _tokens(title):      # slowed, nightcore, karaoke…: no es la grabación original
             continue
         diff = abs(it["duration"] - duration) if duration else 0
-        if diff < best_diff and want and len(want & have) / len(want) >= need and (not first or len(first & have) / len(first) >= need):
+        if diff >= best_diff or not (not first or len(first & have) / len(first) >= need):
+            continue
+        # Título japonés/coreano… y resultado en romaji (o al revés): mismo artista y duración casi idéntica, nombre solo en alfabeto latino.
+        rom = exact and _non_latin(title) and diff <= 1 and first and not _non_latin(it["name"]) and _tokens(it["name"]) - first
+        if rom or any(w and len(w & have) / len(w) >= need for w in alts):
             best, best_diff = it, diff
     return best
 
