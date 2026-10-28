@@ -724,7 +724,12 @@ def test_spotify_track(client, monkeypatch):
     login(client)
     before = len(client.get("/api/jobs").json())
     assert client.post("/api/spotify/track", json={"url": track}).status_code == 404       # nada exacto
-    assert sources == ["mp3pm", "soundcloud", "youtube"] and len(client.get("/api/jobs").json()) == before
+    assert sources == ["mp3pm", "soundcloud"] and len(client.get("/api/jobs").json()) == before      # sin cookies: YouTube no es fuente
+    orig_cookies = jobs.cookies_path
+    monkeypatch.setattr(jobs, "cookies_path", lambda: __import__("pathlib").Path(__file__))                               # con cookies sí
+    main._search_cache.clear(); sources.clear()
+    assert client.post("/api/spotify/track", json={"url": track}).status_code == 404 and sources == ["mp3pm", "soundcloud", "youtube"]
+    monkeypatch.setattr(jobs, "cookies_path", orig_cookies)
     hits["soundcloud"] = [{"url": "https://sc.x/a", "name": "Banda Uno - Tema Uno", "channel": "c", "duration": 202, "source": "soundcloud"}]
     main._search_cache.clear(); sources.clear()
     r = client.post("/api/spotify/track", json={"url": track})
@@ -777,6 +782,7 @@ def test_exact_match_youtube_topic_fallback(monkeypatch):
     live = {"name": "タナトフォビア (Live)", "channel": "Otro", "duration": 219}
     calls = []
     monkeypatch.setattr(m, "_search_cached", lambda q, s, u: calls.append(q) or ([topic] if "Provided" in q else [live]))
+    monkeypatch.setattr(jobs, "track_sources", lambda: jobs.TRACK_SOURCES)
     got = m._exact_match("Tatsuya Kitani", "タナトフォビア", 217, "youtube", {"id": 1})
     assert got == topic and len(calls) == 2
     calls.clear()
@@ -827,3 +833,39 @@ def test_best_match_exact_rejects_variants():
     assert m("ヨルシカ 晴る")                                                                     # el original sí
     assert m("ヨルシカ - 晴る 【Lyric Video】")                                                    # lyric video: audio original
     assert m("Mina Okabe - Every Second (Japanese Version)", "Every Second - Japanese Version", "Mina Okabe")   # lo dice el título
+
+
+def test_spotify_album_artist_and_library(client, monkeypatch):
+    import io, json as _json, urllib.request
+    from app import main, spotify
+    def page(entity):
+        return ('<script id="__NEXT_DATA__" type="application/json">' + _json.dumps(
+            {"props": {"pageProps": {"state": {"data": {"entity": entity}}}}}) + "</script>").encode()
+    tl = [{"title": "Tema Uno", "subtitle": "Banda\xa0Uno", "duration": 200000}, {"title": "Tema Dos", "subtitle": "Banda Uno", "duration": 180000}]
+    seen = []
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=0: seen.append(req.full_url) or io.BytesIO(page({"name": "Disco", "trackList": tl})))
+    album = jobs.spotify_collection("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy")
+    assert album["name"] == "Disco" and [t["title"] for t in album["tracks"]] == ["Tema Uno", "Tema Dos"] and album["tracks"][0]["artist"] == "Banda Uno"
+    assert seen[-1].endswith("/embed/album/4aawyAB9vmqN3uQ7FjRGTy")
+    art = jobs.spotify_collection("https://open.spotify.com/intl-es/artist/0TnOYISbd1XYRBk9myaseg")
+    assert art["name"] == "Disco · populares" and seen[-1].endswith("/embed/artist/0TnOYISbd1XYRBk9myaseg")
+    try:
+        jobs.spotify_collection("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC")
+        assert False
+    except jobs.DownloadError as e:
+        assert "playlist, un álbum o un artista" in str(e)
+    api = {f"{spotify.API}/me/tracks?limit=50": {"items": [{"track": {"name": "Gusta", "artists": [{"name": "X"}], "duration_ms": 123000}}, None], "next": None},
+           f"{spotify.API}/me/albums?limit=50": {"items": [{"album": {"id": "A" * 22, "name": "Alb", "artists": [{"name": "Y"}]}}], "next": None},
+           f"{spotify.API}/me/following?type=artist&limit=50": {"artists": {"items": [{"id": "B" * 22, "name": "Art"}], "next": None}}}
+    monkeypatch.setattr(spotify, "_get", lambda url, token: api[url])
+    assert spotify.liked("t")["tracks"] == [{"artist": "X", "title": "Gusta", "duration": 123}]
+    assert spotify.library("t") == {"albums": [{"id": "A" * 22, "name": "Alb", "by": "Y"}], "artists": [{"id": "B" * 22, "name": "Art", "by": ""}]}
+    def forbidden(url, token):
+        raise spotify.SpotifyError("x", 403)
+    monkeypatch.setattr(spotify, "_get", forbidden)
+    try:
+        spotify.library("t")
+        assert False
+    except spotify.SpotifyError as e:
+        assert "Vuelva a conectar" in str(e)

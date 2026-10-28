@@ -1,4 +1,4 @@
-"""OAuth de Spotify (solo lectura de playlists). Sin SPOTIFY_CLIENT_ID/SECRET queda desactivado."""
+"""OAuth de Spotify (solo lectura de playlists, canciones guardadas, álbumes y artistas seguidos). Sin SPOTIFY_CLIENT_ID/SECRET queda desactivado."""
 from __future__ import annotations
 
 import base64
@@ -13,7 +13,7 @@ from . import storage
 
 AUTH = "https://accounts.spotify.com"
 API = "https://api.spotify.com/v1"
-SCOPE = "playlist-read-private playlist-read-collaborative"
+SCOPE = "playlist-read-private playlist-read-collaborative user-library-read user-follow-read"
 MAX_TRACKS = 500
 _HTTP_ERRORS = {401: "La sesión de Spotify venció; vuelva a conectar", 403: "Spotify no entrega esa playlist",
                 429: "Spotify limitó las consultas; intente en un minuto"}
@@ -131,3 +131,54 @@ def playlist(pid: str, token: str) -> dict:
     if not tracks:
         raise SpotifyError("La playlist no tiene canciones", 404)
     return {"id": pid, "name": data.get("name") or "Playlist", "tracks": tracks[:MAX_TRACKS]}
+
+
+def _artist_names(t: dict) -> str:
+    return ", ".join(a["name"] for a in t.get("artists") or [] if a.get("name"))
+
+
+def _pages(url: str, token: str, pick, limit: int):
+    """Recorre las páginas de una lista de Spotify; `pick(page)` devuelve (items, siguiente)."""
+    out = []
+    for _ in range(30):
+        items, url = pick(_get(url, token))
+        out += items
+        if len(out) >= limit or not url or not url.startswith(API + "/"):
+            break
+    return out[:limit]
+
+
+def _library_call(fn, *a):
+    try:
+        return fn(*a)
+    except SpotifyError as e:
+        if e.status == 403:           # la conexión es anterior a estos permisos
+            raise SpotifyError("Vuelva a conectar Spotify para dar acceso a su biblioteca", 403)
+        raise
+
+
+def liked(token: str) -> dict:
+    """«Canciones que me gustan»."""
+    def pick(page):
+        rows = []
+        for e in page.get("items") or []:
+            t = (e or {}).get("track") or (e or {}).get("item")
+            if t and t.get("name"):
+                rows.append({"artist": _artist_names(t), "title": t["name"].strip(), "duration": int((t.get("duration_ms") or 0) // 1000)})
+        return rows, page.get("next")
+    tracks = _library_call(_pages, f"{API}/me/tracks?limit=50", token, pick, MAX_TRACKS)
+    if not tracks:
+        raise SpotifyError("No tiene canciones guardadas", 404)
+    return {"id": "liked", "name": "Canciones que me gustan", "tracks": tracks}
+
+
+def library(token: str) -> dict:
+    """Álbumes guardados y artistas seguidos: [{id, name, by}]."""
+    def albums(page):
+        return [{"id": a["id"], "name": a.get("name") or "", "by": _artist_names(a)}
+                for a in (((e or {}).get("album") or (e or {}).get("item")) or {} for e in page.get("items") or []) if a.get("id")], page.get("next")
+    def artists(page):
+        box = page.get("artists") or {}
+        return [{"id": a["id"], "name": a.get("name") or "", "by": ""} for a in box.get("items") or [] if a and a.get("id")], box.get("next")
+    return {"albums": _library_call(_pages, f"{API}/me/albums?limit=50", token, albums, 200),
+            "artists": _library_call(_pages, f"{API}/me/following?type=artist&limit=50", token, artists, 200)}

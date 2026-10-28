@@ -483,21 +483,30 @@ async def playlist(request: Request, user: dict = Depends(auth.current_user)):
     body = await request.json()
     url, data = str(body.get("url", "")), None
     pid = jobs.playlist_id(url)
-    try:
-        token = await run_in_threadpool(spotify.token_for, user["id"]) if pid else None
-    except spotify.SpotifyError:                # Spotify caído al refrescar → embed
-        token = None
-    if token:
+    if body.get("kind") == "liked":                 # «Canciones que me gustan» (solo con la cuenta conectada)
         try:
-            data = await run_in_threadpool(spotify.playlist, pid, token)
+            token = await run_in_threadpool(spotify.token_for, user["id"])
+            if token is None:
+                raise HTTPException(409, "Conecte su cuenta de Spotify")
+            data = await run_in_threadpool(spotify.liked, token)
         except spotify.SpotifyError as e:
-            if e.status != 403:                 # 403: playlist ajena → respaldo embed (solo públicas)
-                raise HTTPException(400, str(e))
-    if data is None:
-        try:
-            data = await run_in_threadpool(jobs.spotify_playlist, url)
-        except jobs.DownloadError as e:
             raise HTTPException(400, str(e))
+    else:
+        try:
+            token = await run_in_threadpool(spotify.token_for, user["id"]) if pid else None
+        except spotify.SpotifyError:                # Spotify caído al refrescar → embed
+            token = None
+        if token:
+            try:
+                data = await run_in_threadpool(spotify.playlist, pid, token)
+            except spotify.SpotifyError as e:
+                if e.status != 403:                 # 403: playlist ajena → respaldo embed (solo públicas)
+                    raise HTTPException(400, str(e))
+        if data is None:                            # playlist pública, álbum o artista: página embed
+            try:
+                data = await run_in_threadpool(jobs.spotify_collection, url)
+            except jobs.DownloadError as e:
+                raise HTTPException(400, str(e))
     old = storage._q("SELECT * FROM playlists WHERE user_id=? AND spotify_id=?", (user["id"], data["id"])).fetchone()
     prev = {(t["artist"], t["title"]): t for t in json.loads(old["tracks"])} if old else {}
     tracks = [prev.get((t["artist"], t["title"])) or {**t, "sel": True, "state": "pending", "match": None, "msg": "", "job": ""} for t in data["tracks"]]
@@ -542,6 +551,8 @@ def delete_playlist(pid: int, user: dict = Depends(auth.current_user)):
 def _exact_match(artist: str, title: str, duration: int, source: str, user: dict) -> dict | None:
     """Coincidencia exacta en una fuente. Si el título no es latino y en YouTube no sale, se prueba el canal autogenerado
     «Provided to YouTube» (ahí está el original, con título en romaji)."""
+    if source == "youtube" and "youtube" not in jobs.track_sources():     # sin cookies no se podría descargar: no cuenta como coincidencia
+        return None
     items = _search_cached(f"{artist} {title}", source, user)
     m = jobs.best_match(items, artist, title, duration, exact=True)
     if not m and source == "youtube" and jobs._non_latin(title):
@@ -621,6 +632,17 @@ async def spotify_playlists(user: dict = Depends(auth.current_user)):
         raise HTTPException(502, str(e))
 
 
+@app.get("/api/spotify/library")
+async def spotify_library(user: dict = Depends(auth.current_user)):
+    try:
+        token = await run_in_threadpool(spotify.token_for, user["id"])
+        if token is None:
+            raise HTTPException(409, "Conecte su cuenta de Spotify")
+        return await run_in_threadpool(spotify.library, token)
+    except spotify.SpotifyError as e:
+        raise HTTPException(502, str(e))
+
+
 @app.post("/api/spotify/track", status_code=201)
 async def spotify_track(request: Request, user: dict = Depends(auth.current_user)):
     """Canción de Spotify → trabajo, solo si hay una coincidencia exacta (MP3.pm, luego SoundCloud, luego YouTube)."""
@@ -630,7 +652,7 @@ async def spotify_track(request: Request, user: dict = Depends(auth.current_user
     except jobs.DownloadError as e:
         raise HTTPException(400, str(e))
     _check_active(user)
-    for src in jobs.TRACK_SOURCES:
+    for src in jobs.track_sources():
         try:
             m = await run_in_threadpool(_exact_match, t["artist"], t["title"], t["duration"], src, user)
         except HTTPException as e:
@@ -641,7 +663,7 @@ async def spotify_track(request: Request, user: dict = Depends(auth.current_user
             jid = storage.create("url", m["url"], t["title"][:200], t["artist"][:200], user["id"])
             jobs.kick()
             return {"job": _public(storage.get(jid)), "match": m, "track": t}
-    raise HTTPException(404, "No hay una coincidencia exacta en MP3.pm, SoundCloud ni YouTube; búsquela en «Buscar» y elija a mano")
+    raise HTTPException(404, "No hay una coincidencia exacta descargable en MP3.pm ni SoundCloud; búsquela en «Buscar» y elija a mano")
 
 
 @app.get("/api/suggest")

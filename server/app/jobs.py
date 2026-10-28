@@ -199,6 +199,11 @@ _SPOTIFY_TRACK = re.compile(r"^/(?:intl-[a-z]{2}(?:-[A-Za-z]{2})?/)?track/([A-Za
 TRACK_SOURCES = ("mp3pm", "soundcloud", "youtube")      # orden de búsqueda de una canción de Spotify
 
 
+def track_sources() -> tuple[str, ...]:
+    """Sin cookies, YouTube bloquea las descargas desde el servidor: no se ofrece como fuente automática."""
+    return TRACK_SOURCES if cookies_path().is_file() else TRACK_SOURCES[:2]
+
+
 def _spotify_id(rx: re.Pattern, url: str) -> str | None:
     u = urlparse(url.strip())
     m = rx.match(u.path)
@@ -211,6 +216,18 @@ def playlist_id(url: str) -> str | None:
 
 def track_id(url: str) -> str | None:
     return _spotify_id(_SPOTIFY_TRACK, url)
+
+
+_SPOTIFY_ALBUM = re.compile(r"^/(?:intl-[a-z]{2}(?:-[A-Za-z]{2})?/)?album/([A-Za-z0-9]{22})/?$")
+_SPOTIFY_ARTIST = re.compile(r"^/(?:intl-[a-z]{2}(?:-[A-Za-z]{2})?/)?artist/([A-Za-z0-9]{22})/?$")
+
+
+def album_id(url: str) -> str | None:
+    return _spotify_id(_SPOTIFY_ALBUM, url)
+
+
+def artist_id(url: str) -> str | None:
+    return _spotify_id(_SPOTIFY_ARTIST, url)
 
 
 def _spotify_embed(kind: str, sid: str) -> dict:
@@ -227,24 +244,29 @@ def _spotify_embed(kind: str, sid: str) -> dict:
     except (urllib.error.URLError, TimeoutError, OSError):
         raise DownloadError("Spotify no respondió; intente de nuevo")
     except (AttributeError, KeyError, TypeError, ValueError):
-        raise DownloadError("No se pudo leer la playlist (¿es pública?)" if kind == "playlist"
-                            else "No se pudo leer la canción de Spotify")
+        raise DownloadError({"playlist": "No se pudo leer la playlist (¿es pública?)", "album": "No se pudo leer el álbum de Spotify",
+                             "artist": "No se pudo leer el artista de Spotify"}.get(kind, "No se pudo leer la canción de Spotify"))
 
 
-def spotify_playlist(url: str) -> dict:
-    """Pistas de una playlist pública de Spotify. Devuelve {id, name, tracks: [{artist, title, duration}]}."""
-    pid = playlist_id(url)
-    if not pid:
-        raise DownloadError("Pegue el enlace de una playlist de Spotify (open.spotify.com/playlist/…)")
-    ent = _spotify_embed("playlist", pid)
+def spotify_collection(url: str) -> dict:
+    """Pistas de una playlist pública, un álbum (completo) o un artista (sus 10 populares) de Spotify.
+    Devuelve {id, name, tracks: [{artist, title, duration}]}."""
+    kind, sid = next(((k, i) for k, i in (("playlist", playlist_id(url)), ("album", album_id(url)), ("artist", artist_id(url))) if i), (None, None))
+    if not sid:
+        raise DownloadError("Pegue el enlace de una playlist, un álbum o un artista de Spotify (open.spotify.com/…)")
+    ent = _spotify_embed(kind, sid)
     try:
         tracks = [{"artist": t.get("subtitle", "").replace("\xa0", " ").strip(), "title": t.get("title", "").strip(),
                    "duration": int((t.get("duration") or 0) // 1000)} for t in ent.get("trackList") or [] if t.get("title")]
     except (AttributeError, TypeError, ValueError):
-        raise DownloadError("No se pudo leer la playlist (¿es pública?)")
+        raise DownloadError("No se pudo leer el enlace de Spotify")
     if not tracks:
-        raise DownloadError("La playlist no tiene canciones o no es pública")
-    return {"id": pid, "name": ent.get("name") or "Playlist", "tracks": tracks}
+        raise DownloadError("No tiene canciones" + (" o no es pública" if kind == "playlist" else ""))
+    name = ent.get("name") or {"playlist": "Playlist", "album": "Álbum", "artist": "Artista"}[kind]
+    return {"id": sid, "name": f"{name} · populares" if kind == "artist" else name, "tracks": tracks}
+
+
+spotify_playlist = spotify_collection
 
 
 def spotify_track(url: str) -> dict:

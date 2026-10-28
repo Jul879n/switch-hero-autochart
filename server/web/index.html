@@ -94,17 +94,22 @@
       <ul id="search-results" class="results" aria-labelledby="search-h"></ul>
     </section>
     <section class="card" aria-labelledby="pl-h">
-      <h2 id="pl-h">Playlist de Spotify</h2>
+      <h2 id="pl-h">Playlist, álbum o artista de Spotify</h2>
       <form id="pl-form" class="search" novalidate>
-        <div><label for="pl-url" class="sr-only">Enlace de la playlist</label><input id="pl-url" type="url" placeholder="https://open.spotify.com/playlist/…" autocomplete="off" aria-describedby="pl-url-err"><p id="pl-url-err" class="field-err"></p></div>
-        <button type="submit" class="btn">Cargar playlist</button>
+        <div><label for="pl-url" class="sr-only">Enlace de Spotify</label><input id="pl-url" type="url" placeholder="https://open.spotify.com/playlist/… , /album/… o /artist/…" autocomplete="off" aria-describedby="pl-url-err"><p id="pl-url-err" class="field-err"></p></div>
+        <button type="submit" class="btn">Cargar</button>
       </form>
-      <p class="hint">Pegue el enlace de una playlist pública o conecte su cuenta de Spotify para elegir entre las suyas, incluidas las privadas. «Generar todo» busca cada pista y solo genera las que coinciden exactamente en artista, título y duración (±5 s). Si no la encuentra en la fuente elegida, prueba las otras dos.</p>
+      <p class="hint">Pegue el enlace de una playlist pública, un álbum o un artista (sus 10 populares), o conecte su cuenta de Spotify para elegir entre sus playlists privadas, canciones guardadas, álbumes y artistas que sigue. «Generar todo» busca cada pista y solo genera las que coinciden exactamente en artista, título y duración (±5 s). Si no la encuentra en la fuente elegida, prueba las otras. Sin cookies de YouTube en Administración, YouTube no se usa: las pistas que solo existen allí quedan «sin coincidencia».</p>
       <div id="sp-box" hidden>
         <div id="sp-off" class="actions"><button type="button" id="sp-connect" class="btn ghost">Conectar Spotify</button></div>
         <div id="sp-on" hidden>
           <div class="actions"><button type="button" id="sp-disconnect" class="btn ghost">Desconectar Spotify</button></div>
+          <div class="actions"><button type="button" id="sp-liked" class="btn ghost">Canciones que me gustan</button></div>
           <ul id="sp-lists" class="list" aria-label="Playlists de su cuenta de Spotify"></ul>
+          <h3 class="sub">Álbumes guardados</h3>
+          <ul id="sp-albums" class="list" aria-label="Álbumes guardados en su cuenta de Spotify"></ul>
+          <h3 class="sub">Artistas que sigue</h3>
+          <ul id="sp-artists" class="list" aria-label="Artistas que sigue en Spotify"></ul>
         </div>
       </div>
     </section>

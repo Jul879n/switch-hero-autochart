@@ -475,7 +475,7 @@ $("pl-url").addEventListener("input", () => fieldErr($("pl-url"), ""));
 $("pl-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const url = $("pl-url").value.trim();
-  if (!/^https:\/\/open\.spotify\.com\/(intl-[\w-]+\/)?playlist\//.test(url)) return fieldErr($("pl-url"), "Pegue el enlace de una playlist de Spotify.") || $("pl-url").focus();
+  if (!/^https:\/\/open\.spotify\.com\/(intl-[\w-]+\/)?(playlist|album|artist)\//.test(url)) return fieldErr($("pl-url"), "Pegue el enlace de una playlist, un álbum o un artista de Spotify.") || $("pl-url").focus();
   try {
     const r = await busy(e.submitter, () => post("/api/playlist", { url }), "Cargando…");
     await openPlaylist(r);
@@ -490,20 +490,35 @@ async function loadSpotify() {
   $("sp-box").hidden = !s.configured; $("sp-off").hidden = s.connected; $("sp-on").hidden = !s.connected;
   const ul = $("sp-lists"); ul.replaceChildren();
   if (!s.connected) return;
-  let list;
-  try { list = await api("/api/spotify/playlists"); }
-  catch (err) { ul.append(el("li", { className: "empty", textContent: err.message })); return; }
-  if (!list.length) { ul.append(el("li", { className: "empty", textContent: "Su cuenta de Spotify no tiene playlists." })); return; }
-  for (const p of list) {
-    const btn = el("button", { type: "button", className: "btn ghost", textContent: "Cargar" });
-    btn.setAttribute("aria-label", `Cargar ${p.name}`);
-    btn.addEventListener("click", async () => {
-      try { await openPlaylist(await busy(btn, () => post("/api/playlist", { url: `https://open.spotify.com/playlist/${p.id}` }), "Cargando…")); }
-      catch (err) { toast(err.message, false); }
-    });
-    ul.append(el("li", { className: "item" }, el("span", { textContent: `${p.name} · ${p.total} pistas` }), el("div", { className: "actions" }, btn)));
+  const addRows = (ul, rows, empty) => {
+    ul.replaceChildren();
+    if (!rows.length) { ul.append(el("li", { className: "empty", textContent: empty })); return; }
+    for (const r of rows) {
+      const btn = el("button", { type: "button", className: "btn ghost", textContent: "Cargar" });
+      btn.setAttribute("aria-label", `Cargar ${r.name}`);
+      btn.addEventListener("click", async () => {
+        try { await openPlaylist(await busy(btn, () => post("/api/playlist", { url: r.url }), "Cargando…")); }
+        catch (err) { toast(err.message, false); }
+      });
+      ul.append(el("li", { className: "item" }, el("span", { textContent: r.label }), el("div", { className: "actions" }, btn)));
+    }
+  };
+  try {
+    const list = await api("/api/spotify/playlists");
+    addRows(ul, list.map((p) => ({ name: p.name, label: `${p.name} · ${p.total} pistas`, url: `https://open.spotify.com/playlist/${p.id}` })), "Su cuenta de Spotify no tiene playlists.");
+  } catch (err) { ul.append(el("li", { className: "empty", textContent: err.message })); }
+  try {
+    const lib = await api("/api/spotify/library");
+    addRows($("sp-albums"), lib.albums.map((a) => ({ name: a.name, label: a.by ? `${a.name} · ${a.by}` : a.name, url: `https://open.spotify.com/album/${a.id}` })), "No tiene álbumes guardados.");
+    addRows($("sp-artists"), lib.artists.map((a) => ({ name: a.name, label: a.name, url: `https://open.spotify.com/artist/${a.id}` })), "No sigue a ningún artista.");
+  } catch (err) {
+    for (const id of ["sp-albums", "sp-artists"]) { $(id).replaceChildren(el("li", { className: "empty", textContent: err.message })); }
   }
 }
+$("sp-liked").addEventListener("click", async (e) => {
+  try { await openPlaylist(await busy(e.currentTarget, () => post("/api/playlist", { kind: "liked" }), "Cargando…")); }
+  catch (err) { toast(err.message, false); }
+});
 $("sp-connect").addEventListener("click", () => { location.href = "/api/spotify/login"; });
 $("sp-disconnect").addEventListener("click", async () => {
   try { await send("DELETE", "/api/spotify"); toast("Spotify desconectado."); } catch (err) { toast(err.message, false); }
